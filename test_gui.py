@@ -68,6 +68,13 @@ check("再按電音：關掉", fx.params["mode"] == "off")
 a.preset("sing")
 check("自然修音：自動跟調、保留顫音模式，含人聲修飾", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0 and fx.params["color"] == "人聲修飾")
 a.preset("sing")
+# 混響與去齒音固定：切換效果不會改變
+a.verb.set(37); a.deess.set(55); a.apply()
+for name in list(app.PRESETS) + list(app.PRESETS):
+    a.preset(name)
+a.clear_fx()
+check("切換所有效果後，混響仍是 37%", abs(fx.params["verb"] - 0.37) < 1e-6 and abs(float(a.verb.get()) - 37) < 1e-6)
+check("切換所有效果後，去齒音仍是 55%", abs(fx.params["deess"] - 0.55) < 1e-6)
 # 跳動波形
 a.eng.running = True
 a.eng.lv.update(inp=0.5, mon=0.3, out=0.4, bgm=0.2)

@@ -297,6 +297,23 @@ x, o, _ = run(noise, seconds=1.0, color="少女甜嗓")
 g2k = band_energy(o[SR // 2:SR // 2 + 16384], 1800, 2200) / band_energy(x[SR // 2:SR // 2 + 16384], 1800, 2200)
 check("少女甜嗓：2kHz 提升", 10 * np.log10(g2k) > 3, "%.1f dB" % (10 * np.log10(g2k)))
 
+# ---------- 去齒音：齒音被壓、母音不變
+def sib_test(amt):
+    tt = np.arange(SR * 2) / SR
+    vowel = 0.3 * np.sin(2 * np.pi * 220 * tt) + 0.15 * np.sin(2 * np.pi * 440 * tt)
+    from scipy.signal import butter, sosfilt
+    nz = sosfilt(butter(4, [5500, 9000], "bandpass", fs=SR, output="sos"), np.random.default_rng(3).standard_normal(len(tt))) * 0.5
+    gate = ((tt % 0.5) > 0.35).astype(float)       # 每 0.5 秒出現一次「ㄙ」
+    x = (vowel * (1 - gate) + nz * gate).astype(np.float32)
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, deess=amt)
+    o = np.concatenate([fx.process(x[s0:s0 + 256]) for s0 in range(0, len(x) // 256 * 256, 256)])
+    m = gate[:len(o)] > 0
+    sib = np.sqrt(np.mean(o[SR // 2:][m[SR // 2:]] ** 2)); vow = np.sqrt(np.mean(o[SR // 2:][~m[SR // 2:]] ** 2))
+    return sib, vow
+s0, v0 = sib_test(0.0); s1, v1 = sib_test(0.7)
+check("去齒音：齒音被壓下來", 20 * np.log10(s1 / s0) < -5, "%.1f dB" % (20 * np.log10(s1 / s0)))
+check("去齒音：母音幾乎不變", abs(20 * np.log10(v1 / v0)) < 1.0, "%.2f dB" % (20 * np.log10(v1 / v0)))
+
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)
 fx.set(mode="scale", key=0, scale="major", strength=1.0, phone=True, machine=True, comp=0.5, verb=0.5, eq_lo=3, eq_mid=2, eq_hi=3)

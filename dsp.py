@@ -484,6 +484,39 @@ VOICE_COLORS = {
 }
 
 
+# ---------------------------------------------------------------- 去齒音
+class DeEsser:
+    """只在出現「嘶、ㄘ、ㄙ」這類刺耳齒音時，把 5kHz 以上壓下來；平常母音不受影響。"""
+
+    def __init__(self, sr):
+        self.hp = [Biquad("hp", 5000, sr, q=0.7), Biquad("hp", 5000, sr, q=0.7)]
+        self.shelf = Biquad("highshelf", 4500, sr, 0.0)
+        self.g = 1.0
+        self.reduced = 0.0
+
+    def process(self, y, amt):
+        hb = y
+        for f in self.hp:
+            hb = f(hb)
+        if amt <= 0.001:
+            self.g = 1.0
+            self.shelf.set_gain(0.0)
+            return y
+        s = float(np.sqrt(np.mean(hb * hb))) + 1e-9
+        t = float(np.sqrt(np.mean(y * y))) + 1e-9
+        rel = 20 * math.log10(s / t)              # 高頻占整體多少（dB）
+        thr = -6.0 - 8.0 * amt                    # 強度越高，越早開始壓
+        excess = max(0.0, rel - thr)
+        gdb = -min(14.0 * amt + 2.0, excess * (0.6 + 0.4 * amt)) if excess > 0 else 0.0
+        want = 10 ** (gdb / 20)
+        g_end = want if want < self.g else self.g + (want - self.g) * 0.3   # 壓得快、放得慢
+        self.g = g_end
+        self.reduced = -20 * math.log10(max(g_end, 1e-6))
+        # 用高頻搁架濾波器直接把高頻調小（不會有分頻相位問題）
+        self.shelf.set_gain(-self.reduced if self.reduced > 0.05 else 0.0)
+        return self.shelf(y)
+
+
 # ---------------------------------------------------------------- 限制器
 class Limiter:
     """太大聲時平滑地把音量壓下來（不像硬削波那樣把波形切平，聽起來不會破、不會吵）。"""
@@ -525,7 +558,7 @@ class VoiceFx:
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
-            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本",
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -542,6 +575,7 @@ class VoiceFx:
         self.eq = [Biquad("lowshelf", 150, sr), Biquad("peaking", 2200, sr, q=0.8), Biquad("highshelf", 7000, sr)]
         self.comp = Compressor()
         self.electro = ElectroLayer(sr)
+        self.deesser = DeEsser(sr)
         self.color_eq = []
         self._color = None
         self.verb = Reverb(sr)
@@ -626,6 +660,7 @@ class VoiceFx:
             y = f(y)
         for f in self.eq:
             y = f(y)
+        y = self.deesser.process(y, float(self.p["deess"]))
         y = self.comp.process(y)
         v = self.p["verb"]
         if v > 0.001:

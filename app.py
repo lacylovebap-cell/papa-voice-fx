@@ -162,7 +162,8 @@ class App:
         self.block_now = 256
         self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
-        self.verb = self.var("verb", 0, D)
+        self.verb = self.var("verb", 15, D)
+        self.deess = self.var("deess", 40, D)
         self.g_dry = self.var("g_dry", 0, D)
         self.el_style = self.var("el_style", "流行網感（微微電音）")
         if self.el_style.get() not in EL_STYLES:
@@ -245,6 +246,17 @@ class App:
             b = self.button(row, txt, lambda k=key: self.preset(k), size=12)
             b.pack(side="left", expand=True, fill="x", padx=3)
             self.preset_btns[key] = b
+        # 混響、去齒音：固定一個值，切換任何效果都不會跑掉
+        fixed = tk.Frame(fx, bg=C_CARD)
+        fixed.pack(fill="x", pady=(10, 0))
+        for col, (txt, v) in enumerate((("🌫 混響", self.verb), ("🦷 去齒音", self.deess))):
+            self.label(fixed, txt, 11, C_TXT, True).grid(row=0, column=col * 3, sticky="w", padx=(0 if col == 0 else 24, 6))
+            ttk.Scale(fixed, from_=0, to=100, variable=v, orient="horizontal", length=170,
+                      command=lambda _v: self.apply()).grid(row=0, column=col * 3 + 1)
+            vl = self.label(fixed, "", 10, C_SUB, width=5)
+            vl.grid(row=0, column=col * 3 + 2)
+            v._fmt = (vl, "{:.0f}%")
+        self.label(fx, "↑ 混響和去齒音是固定的，切換任何效果都會沿用。", 9, C_SUB, anchor="w").pack(fill="x")
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
         self.label(el, "電音風格：", 10).pack(side="left")
@@ -278,7 +290,6 @@ class App:
         tk.Checkbutton(self.adv, text="超低延遲（有爆音就取消勾選）", variable=self.ultra, bg=C_CARD, fg=C_TXT,
                        selectcolor="#13111c", activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
         self._slider(self.adv, 1, "直播對齊微調（人聲搶拍往右、拖拍往左）", self.bgm_trim, -80, 80, "{:+.0f} ms")
-        self._slider(self.adv, 2, "空間感（混響）", self.verb, 0, 100, "{:.0f}%")
         self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
         self.button(self.adv, "重新尋找裝置", self.refresh_devices, size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
@@ -420,7 +431,7 @@ class App:
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
             eq_lo=float(self.eq_lo.get()), eq_mid=float(self.eq_mid.get()), eq_hi=float(self.eq_hi.get()),
             comp=float(self.comp.get()) / 100, verb=float(self.verb.get()) / 100,
-            card=bool(self.card.get()), electro_fx=electro_fx,
+            card=bool(self.card.get()), electro_fx=electro_fx, deess=float(self.deess.get()) / 100,
         )
         self.eng.set_params(**kw)
         for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm)):
