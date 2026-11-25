@@ -195,6 +195,7 @@ class Engine:
         self.bgm_trim_ms = 0.0         # 使用者微調
         self.bgm_fifo = np.zeros(0)
         self.level = 0.0
+        self.lv = dict(inp=0.0, mon=0.0, out=0.0, bgm=0.0)   # 各管道音量（給畫面的跳動波形用）
         self.info = (0.0, None, None)
         self.block = 256
         self.mon_ring = None
@@ -273,6 +274,7 @@ class Engine:
         try:
             x = indata[:, 0].astype(np.float64) * self.gains["inp"]
             dry = x.astype(np.float32)
+            self.lv["inp"] = float(np.max(np.abs(x))) if len(x) else 0.0
             y = self.fx.process(x)
             self.info = self.fx.info
             self.level = float(np.max(np.abs(y))) if len(y) else 0.0
@@ -291,6 +293,7 @@ class Engine:
                 bg_mix = fifo[:len(y)]
                 self.bgm_fifo = fifo[len(y):]
                 bg_mon = bg          # 耳機裡的伴奏不延後（越早聽到越好）
+                self.lv["bgm"] = float(np.max(np.abs(bg))) if len(bg) else 0.0
             else:
                 bg_mix = bg_mon = 0.0
             if self.recording and self.rec_samples < self.rec_max:
@@ -308,9 +311,12 @@ class Engine:
                     self.play_data = None
             else:
                 mon = (y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
+            self.lv["mon"] = float(np.max(np.abs(mon))) if len(mon) else 0.0
             self.mon_ring.write(np.clip(mon, -1.0, 1.0).astype(np.float32))
             if self.out_ring is not None:
-                self.out_ring.write(np.clip(y * self.gains["out"] + bg_mix, -1, 1).astype(np.float32))
+                o_ = np.clip(y * self.gains["out"] + bg_mix, -1, 1)
+                self.lv["out"] = float(np.max(np.abs(o_))) if len(o_) else 0.0
+                self.out_ring.write(o_.astype(np.float32))
         except Exception as e:  # 回呼內不可丟例外，否則串流會停
             self.last_error = repr(e)
 
@@ -405,6 +411,8 @@ class Engine:
                 pass
         self.streams = []
         self.level = 0.0
+        for k in self.lv:
+            self.lv[k] = 0.0
 
     @property
     def underruns(self):
