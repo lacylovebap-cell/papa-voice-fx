@@ -204,7 +204,7 @@ class App:
         self.phone_dist = self.var("phone_dist", 25, tk.DoubleVar)
         ttk.Checkbutton(mid, text="電話音（窄頻＋失真）", variable=self.phone, command=self.apply).pack(anchor="w")
         self.slider(mid, "電話音失真", self.phone_dist, 0, 100, "{:.0f}%")
-        ttk.Checkbutton(mid, text="答錄機音（窄頻、8kHz 低取樣、磁帶抖動、底噪）", variable=self.machine, command=self.apply).pack(anchor="w", pady=(6, 0))
+        ttk.Checkbutton(mid, text="答錄機音（乾淨版：像從答錄機小喇叭播出，不失真）", variable=self.machine, command=self.apply).pack(anchor="w", pady=(6, 0))
 
         # ---- 右：音色與音量
         ttk.Label(right, text="⑥ 音色", style="H.TLabel").pack(anchor="w")

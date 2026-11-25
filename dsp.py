@@ -295,15 +295,11 @@ class VoiceFx:
         self.ph_hp = [Biquad("hp", 320, sr, q=0.9) for _ in range(2)]
         self.ph_lp = [Biquad("lp", 3300, sr, q=0.9) for _ in range(2)]
         self.ph_mix = 0.0
-        # 答錄機音
-        self.m_hp = Biquad("hp", 260, sr, q=0.8)
-        self.m_lp = [Biquad("lp", 3000, sr, q=0.8) for _ in range(2)]
-        self.m_rec = [Biquad("lp", 3300, sr, q=0.7) for _ in range(2)]  # 降取樣後的重建濾波
+        # 答錄機音（乾淨版）：小喇叭窄頻＋中頻共鳴，不失真、不加雜訊
+        self.m_chain = [Biquad("hp", 450, sr, q=0.7), Biquad("hp", 450, sr, q=0.7),
+                        Biquad("lp", 3400, sr, q=0.7), Biquad("lp", 3400, sr, q=0.7),
+                        Biquad("peaking", 1400, sr, 5.0, q=1.0), Biquad("peaking", 700, sr, -2.0, q=1.2)]
         self.m_mix = 0.0
-        self.m_hist = np.zeros(128)
-        self.m_cnt = 0
-        self.m_held = 0.0
-        self.rng = np.random.default_rng(1)
         # 音色
         self.eq = [Biquad("lowshelf", 150, sr), Biquad("peaking", 2200, sr, q=0.8), Biquad("highshelf", 7000, sr)]
         self.comp = Compressor()
@@ -334,39 +330,11 @@ class VoiceFx:
         return y * 1.6
 
     def _machine(self, x):
-        """答錄機音（第一版）：窄頻、8kHz 取樣、低位元、磁帶抖動、底噪。"""
-        n = len(x)
-        y = self.m_hp(x)
-        for f in self.m_lp:
+        """答錄機音（乾淨版）：像聲音從答錄機／話筒小喇叭播出來，但不失真。"""
+        y = x
+        for f in self.m_chain:
             y = f(y)
-        # 降取樣率到 8kHz（零階保持）
-        step = max(1, int(round(self.sr / 8000)))
-        g = self.m_cnt + np.arange(n)
-        mask = (g % step) == 0
-        idxs = np.maximum.accumulate(np.where(mask, np.arange(n), -1))
-        held = np.where(idxs >= 0, y[np.maximum(idxs, 0)], self.m_held)
-        self.m_held = float(held[-1])
-        y = held
-        # 低位元
-        lv = 2 ** 9
-        y = np.round(y * lv) / lv
-        for f in self.m_rec:
-            y = f(y)
-        # 磁帶抖動（慢速漂移＋快速顫動）
-        t = (g) / self.sr
-        d = 16 + 5 * np.sin(2 * np.pi * 0.6 * t) + 1.5 * np.sin(2 * np.pi * 5.5 * t + 1.0)
-        L = len(self.m_hist)
-        ext = np.concatenate((self.m_hist, y))
-        pos = L + np.arange(n) - d
-        i0 = np.floor(pos).astype(np.int64)
-        fr = pos - i0
-        y = ext[i0] * (1 - fr) + ext[i0 + 1] * fr
-        self.m_hist = ext[-L:]
-        self.m_cnt += n
-        # 底噪＋輕微飽和
-        y = y + self.rng.standard_normal(n) * 0.003
-        y = np.tanh(1.6 * y) / 1.6
-        return y * 1.4
+        return y * 1.8
 
     @staticmethod
     def _xfade(dry, wet, m0, m1):

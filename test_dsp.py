@@ -110,12 +110,19 @@ hi_ratio = band_energy(seg_o, 6000, 12000) / band_energy(seg_i, 6000, 12000)
 check("電話音：低頻被削掉", low_ratio < mid_ratio * 0.05, f"低/中={low_ratio / mid_ratio:.3f}")
 check("電話音：高頻被削掉", hi_ratio < mid_ratio * 0.05, f"高/中={hi_ratio / mid_ratio:.3f}")
 
-# ---------- 答錄機音
-x, o, _ = run(rich(220), machine=True, seconds=1.0)
+# ---------- 答錄機音（乾淨版）
+x, o, _ = run(rich(300), machine=True, seconds=1.0)
 check("答錄機音：輸出有效", np.all(np.isfinite(o)) and np.sqrt(np.mean(o[SR // 2:] ** 2)) > 0.02)
 x, o, _ = run(noise, machine=True, seconds=1.0)
-hi = band_energy(o[SR // 2:SR // 2 + 16384], 5000, 12000) / band_energy(o[SR // 2:SR // 2 + 16384], 500, 2500)
-check("答錄機音：高頻明顯變少", hi < 0.05, f"高/中={hi:.3f}")
+seg_o = o[SR // 2:SR // 2 + 16384]; seg_i = x[SR // 2:SR // 2 + 16384]
+r = lambda lo, hi: band_energy(seg_o, lo, hi) / band_energy(seg_i, lo, hi)
+check("答錄機音：低頻削掉", r(50, 200) < r(1000, 2000) * 0.03, f"{r(50,200)/r(1000,2000):.4f}")
+check("答錄機音：高頻削掉", r(7000, 12000) < r(1000, 2000) * 0.03, f"{r(7000,12000)/r(1000,2000):.4f}")
+# 不失真：純音進去，諧波不應增加
+x, o, _ = run(lambda t: 0.4 * np.sin(2 * np.pi * 1000 * t), machine=True, seconds=1.0)
+seg = o[SR // 2:SR // 2 + 16384].astype(np.float64)
+h1, h3 = band_energy(seg, 950, 1050), band_energy(seg, 2950, 3050)
+check("答錄機音：不失真（3 次諧波 < -50dB）", 10 * np.log10(h3 / h1) < -50, f"{10*np.log10(h3/h1):.0f} dB")
 
 # ---------- 聲卡變音音色：200Hz 降約 6dB、3.2kHz 降約 5dB、1kHz 幾乎不變
 def band_gain(lo, hi, **kw):
