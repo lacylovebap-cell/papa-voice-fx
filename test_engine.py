@@ -27,6 +27,7 @@ class FakeStream:
 
 fake = types.ModuleType("sounddevice")
 fake.InputStream = FakeStream
+fake.Stream = None   # 先測「分開的線」；後面再測「同一條線」
 fake.OutputStream = FakeStream
 fake.WasapiSettings = lambda **kw: ("wasapi", kw)
 fake.query_devices = lambda: [
@@ -222,6 +223,31 @@ for blk in (128, 256, 512, 1024, 2048):
     check("緩衝 %d：全部效果都正常輸出" % blk, e2.last_error is None and e2.lv["out"] > 0.01 and e2.lv["mon"] > 0.01,
           str(e2.last_error))
     e2.stop()
+
+# 同一條線（duplex）：耳機直接輸出、不經過緩衝
+class FakeDuplex(FakeStream):
+    def __init__(self, **kw):
+        super().__init__(**kw); self.latency = (0.01, 0.01)
+fake.Stream = FakeDuplex
+e3 = engine.Engine(); e3.set_params(mode="off", card=True, comp=0.0, verb=0.0); e3.start(0, 1, 2, block=256)
+check("收音＋耳機合成同一條線", e3.duplex and len(e3.streams) == 2)
+d3, c3 = e3.streams
+mo = []
+for s in range(0, len(sig) // 256 * 256, 256):
+    od = np.zeros((256, 2), np.float32)
+    d3.cb(sig[s:s + 256].reshape(-1, 1), od, 256, None, None)
+    mo.append(od[:, 0].copy())
+    oc = np.zeros((256, 2), np.float32); c3.cb(oc, 256, None, None)
+mo = np.concatenate(mo)
+check("同一條線：耳機有處理後的聲音（聲卡變音升調）", abs(est_freq(mo) - 226 * 2 ** (1.5 / 12)) < 4, "%.1f" % est_freq(mo))
+check("同一條線：耳機沒有爆音計數", e3.underruns == 0)
+# 直播那條來不及：只會自己加緩衝，不算耳機爆音
+t0 = e3.cable_target
+for _ in range(5):
+    oc = np.zeros((256, 2), np.float32); c3.cb(oc, 256, None, None)
+check("直播來不及時只加直播自己的緩衝", e3.cable_target > t0 and e3.underruns == 0, "%d → %d" % (t0, e3.cable_target))
+e3.stop()
+fake.Stream = None
 
 # Ring 行為
 r = engine.Ring(4096)

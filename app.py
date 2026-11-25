@@ -618,8 +618,9 @@ class App:
             bmsg = ""
             if e.backing_error or (bk is not None and bk.error):
                 bmsg = "\n伴奏抓不到：" + str(e.backing_error or bk.error)
-            self.status.config(text="耳機聽自己的延遲：約 %.0f ms\n直播裡的伴奏已自動對齊人聲\n爆音次數：%d%s"
-                               % (e.latency_ms, e.underruns, bmsg))
+            mode = "收音＋耳機同一條線（最即時）" if e.duplex else "收音、耳機分開（相容模式）"
+            self.status.config(text="%s\n耳機聽自己的延遲：約 %.0f ms\n直播那條自動緩衝：%.0f ms（不影響耳機）\n耳機爆音次數：%d%s"
+                               % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bmsg))
             self.auto_protect()
             if getattr(e, "last_error", None):
                 self.msg.config(text="⚠ 處理出錯，聲音沒有送出去！請截圖給 Claude：" + str(e.last_error)[:80], fg="#ff8a8a")
@@ -653,7 +654,7 @@ class App:
                 self.ultra.set(0)
             self.eng.stop()
             self.start_engine(0)
-            self.msg.config(text="偵測到爆音，已自動加大緩衝（%d）。聲音會晚一點點，但不會再爆音。" % self.block_now)
+            self.msg.config(text="耳機那條來不及處理，已調整緩衝（%d）。如果常出現，請關掉其他吃電腦資源的程式。" % self.block_now)
 
     def on_close(self):
         try:

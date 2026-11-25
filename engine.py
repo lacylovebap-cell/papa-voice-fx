@@ -28,6 +28,11 @@ else:
 SR = 48000
 
 
+def _now():
+    import time
+    return time.monotonic()
+
+
 class Ring:
     """單一生產者/單一消費者的環形緩衝。超出時丟棄最舊的，不足時補 0。"""
 
@@ -203,6 +208,11 @@ class Engine:
         self.backing_error = None
         self.in_clip = 0.0
         self.bgm_on = True
+        self.duplex = False
+        self._mon_now = None
+        self.xruns = 0
+        self._t_started = None
+        self.cable_target = 512
         self.out_target = 512          # 輸出緩衝目標（樣本）
         self.bgm_comp = 0              # 伴奏延後量（樣本），讓直播裡伴奏和人聲對齊
         self.bgm_trim_ms = 0.0         # 使用者微調
@@ -330,7 +340,11 @@ class Engine:
             else:
                 mon = self.lim_mon.process((y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"]))
             self.lv["mon"] = float(np.max(np.abs(mon))) if len(mon) else 0.0
-            self.mon_ring.write(np.clip(mon, -1.0, 1.0).astype(np.float32))
+            mon = np.clip(mon, -1.0, 1.0).astype(np.float32)
+            if self.duplex:
+                self._mon_now = mon                 # 同一條線：直接送到耳機，不經過緩衝
+            else:
+                self.mon_ring.write(mon)
             if self.out_ring is not None:
                 o_ = out_mix
                 self.lv["out"] = float(np.max(np.abs(o_))) if len(o_) else 0.0
@@ -347,6 +361,32 @@ class Engine:
                         f.write("[%s] 處理錯誤\n%s\n" % (datetime.datetime.now().isoformat(timespec="seconds"), traceback.format_exc()))
                 except Exception:
                     pass
+
+    def _duplex_cb(self, indata, outdata, frames, time_info, status):
+        """聲卡收音＋耳機輸出在同一條線（同一個時鐘）：處理完直接送耳機，延遲最低、不會因時鐘不同步爆音。"""
+        if status and (getattr(status, "input_overflow", False) or getattr(status, "output_underflow", False)):
+            if time_info is None or self._t_started is None or _now() - self._t_started > 1.5:
+                self.xruns += 1
+        self._mon_now = None
+        self._in_cb(indata, frames, time_info, None)
+        m = self._mon_now
+        if m is None or len(m) != frames:
+            outdata.fill(0)
+            return
+        outdata[:, 0] = m
+        if outdata.shape[1] > 1:
+            outdata[:, 1] = m
+
+    def _cable_cb(self, outdata, frames, time_info, status):
+        """送直播（CABLE）：不夠時只讓這條多存一點，耳機不受影響。"""
+        r = self.out_ring
+        before = r.underruns
+        y = r.read(frames, self.cable_target)
+        if r.underruns > before and self.cable_target < self.block * 8:
+            self.cable_target += self.block
+        outdata[:, 0] = y
+        if outdata.shape[1] > 1:
+            outdata[:, 1] = y
 
     def _make_out_cb(self, ring):
         def cb(outdata, frames, time_info, status):
@@ -373,7 +413,11 @@ class Engine:
         self.fx.set(**self.params)
         cap = self.block * 16
         self.mon_ring = Ring(cap)
-        self.out_ring = Ring(cap) if out_dev is not None else None
+        self.out_ring = Ring(max(cap, self.block * 24)) if out_dev is not None else None
+        self.cable_target = self.block * 2
+        self.xruns = 0
+        self._t_started = None
+        self.duplex = False
 
         def extra(excl):
             try:
@@ -383,17 +427,30 @@ class Engine:
 
         opened = []
         try:
-            inp = sd.InputStream(device=in_dev, channels=1, samplerate=SR, blocksize=self.block,
-                                 dtype="float32", latency="low", callback=self._in_cb,
-                                 extra_settings=extra(exclusive))
-            opened.append(inp)
-            mon = sd.OutputStream(device=mon_dev, channels=2, samplerate=SR, blocksize=self.block,
-                                  dtype="float32", latency="low", callback=self._make_out_cb(self.mon_ring),
-                                  extra_settings=extra(exclusive))
-            opened.append(mon)
+            main = None
+            try:
+                # 優先：收音＋耳機同一條線
+                main = sd.Stream(device=(in_dev, mon_dev), channels=(1, 2), samplerate=SR, blocksize=self.block,
+                                 dtype="float32", latency="low", callback=self._duplex_cb,
+                                 extra_settings=(extra(exclusive), extra(exclusive)))
+                self.duplex = True
+            except Exception:
+                main = None
+                self.duplex = False
+            if main is not None:
+                opened.append(main)
+            else:
+                inp = sd.InputStream(device=in_dev, channels=1, samplerate=SR, blocksize=self.block,
+                                     dtype="float32", latency="low", callback=self._in_cb,
+                                     extra_settings=extra(exclusive))
+                opened.append(inp)
+                mon = sd.OutputStream(device=mon_dev, channels=2, samplerate=SR, blocksize=self.block,
+                                      dtype="float32", latency="low", callback=self._make_out_cb(self.mon_ring),
+                                      extra_settings=extra(exclusive))
+                opened.append(mon)
             if out_dev is not None:
                 out = sd.OutputStream(device=out_dev, channels=2, samplerate=SR, blocksize=self.block,
-                                      dtype="float32", latency="low", callback=self._make_out_cb(self.out_ring),
+                                      dtype="float32", latency="low", callback=self._cable_cb,
                                       extra_settings=extra(False))
                 opened.append(out)
             # 先啟動輸出，再啟動輸入
@@ -407,6 +464,7 @@ class Engine:
                     pass
             raise
         self.streams = opened
+        self._t_started = _now()
         self.running = True
         self.backing_error = None
         if backing:
@@ -421,7 +479,11 @@ class Engine:
         self.bgm_fifo = np.zeros(0)
         try:
             shifter = self.fx.tuner.W / 2 + 3
-            rt = (opened[0].latency + opened[1].latency) * SR + self.out_target + shifter
+            if self.duplex:
+                li, lo = opened[0].latency
+                rt = (li + lo) * SR + shifter
+            else:
+                rt = (opened[0].latency + opened[1].latency) * SR + self.out_target + shifter
             self.latency_ms = rt * 1000.0 / SR
             self.bgm_comp = int(rt)
         except Exception:
@@ -449,9 +511,14 @@ class Engine:
 
     @property
     def underruns(self):
-        n = self.status_msgs          # 輸入端來不及（overflow）也算
-        n = n if isinstance(n, int) else 0
-        for r in (self.mon_ring, self.out_ring):
-            if r is not None:
-                n += r.underruns
+        """耳機那條真的來不及的次數（直播那條會自己調整，不算在這裡）。"""
+        if self.duplex:
+            return self.xruns
+        n = self.status_msgs if isinstance(self.status_msgs, int) else 0
+        if self.mon_ring is not None:
+            n += self.mon_ring.underruns
         return n
+
+    @property
+    def cable_underruns(self):
+        return self.out_ring.underruns if self.out_ring is not None else 0
