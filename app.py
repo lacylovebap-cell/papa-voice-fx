@@ -158,7 +158,9 @@ class App:
         self.g_out, self.g_bgm = self.var("g_out", 100, D), self.var("g_bgm", 80, D)
         self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
         self.card = self.var("card", 1, tk.IntVar, remember=False)  # 每次開啟一律鎖定
-        self.ultra = self.var("ultra", 1, tk.IntVar)
+        self.ultra = self.var("ultra_v2", 0, tk.IntVar)
+        self.block_now = 256
+        self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
         self.verb = self.var("verb", 0, D)
         self.g_dry = self.var("g_dry", 0, D)
@@ -217,10 +219,14 @@ class App:
         # ---- 效果
         fx = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         fx.pack(fill="x", pady=10)
-        self.label(fx, "效果（再按一次＝關掉；都會疊在聲卡變音上）", 11, C_PINK, True).pack(anchor="w", pady=(0, 6))
+        self.label(fx, "效果（再按一次＝關掉）", 11, C_PINK, True).pack(anchor="w", pady=(0, 2))
+        self.now_label = self.label(fx, "", 12, C_YELLOW, True, anchor="w")
+        self.now_label.pack(fill="x", pady=(0, 6))
         row = tk.Frame(fx, bg=C_CARD)
         row.pack(fill="x")
         self.preset_btns = {}
+        self.btn_none = self.button(row, "✋ 無效果", self.clear_fx, size=12)
+        self.btn_none.pack(side="left", expand=True, fill="x", padx=3)
         for key, txt in PRESET_NAMES.items():
             b = self.button(row, txt, lambda k=key: self.preset(k), size=12)
             b.pack(side="left", expand=True, fill="x", padx=3)
@@ -362,7 +368,11 @@ class App:
         self.apply()
         bgm = self.dev_bgm.get()
         try:
-            self.eng.start(in_dev, mon_dev, out_dev, block=128 if ultra else 256, low_latency=bool(ultra),
+            if ultra:
+                self.block_now = 128
+            elif self.block_now < 256:
+                self.block_now = 256
+            self.eng.start(in_dev, mon_dev, out_dev, block=self.block_now, low_latency=bool(ultra),
                            backing=None if bgm in ("", NONE) else bgm, ultra=bool(ultra))
         except Exception as e:
             log_error(traceback.format_exc())
@@ -373,6 +383,7 @@ class App:
             messagebox.showerror("啟動失敗", str(e))
             return
         self.btn_start.config(text="■ 停止")
+        self._ur_hist = []
         self.msg.config(text="運作中。對著麥克風出聲，看「麥克風」那一行有沒有跳動。")
 
     # ------------------------------------------------------------ 參數
@@ -417,6 +428,12 @@ class App:
         self.active_preset = None if p is NEUTRAL else name
         self.apply()
 
+    def clear_fx(self):
+        for k, v in NEUTRAL.items():
+            getattr(self, k).set(v)
+        self.active_preset = None
+        self.apply()
+
     def set_mode(self, val):
         self.mode.set("off" if self.mode.get() == val else val)
         self.active_preset = None
@@ -444,6 +461,16 @@ class App:
         c = C_GREEN if b else C_BTN
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
                             fg="#0b2216" if b else C_TXT)
+        none = self.active_preset is None
+        c = C_GREEN if none else C_BTN
+        self.btn_none.config(bg=c, activebackground=c, fg="#0b2216" if none else C_TXT)
+        voice = "聲卡變音" if on else "⚠ 原音"
+        fxname = PRESET_NAMES[self.active_preset].split(" ", 1)[1] if self.active_preset else "無效果"
+        extra = ""
+        if self.active_preset == "electro":
+            extra = "（%s）" % self.el_style.get()
+        col = "" if self.color.get() == "原本" else "＋聲線「%s」" % self.color.get()
+        self.now_label.config(text="現在送出去的聲音 ＝ %s ＋ %s%s%s" % (voice, fxname, extra, col))
         for k, btn in self.preset_btns.items():
             c = C_GREEN if self.active_preset == k else C_BTN
             btn.config(bg=c, activebackground=c, fg="#0b2216" if self.active_preset == k else C_TXT)
@@ -538,12 +565,30 @@ class App:
                 bmsg = "\n伴奏抓不到：" + str(e.backing_error or bk.error)
             self.status.config(text="耳機聽自己的延遲：約 %.0f ms\n直播裡的伴奏已自動對齊人聲\n爆音次數：%d%s"
                                % (e.latency_ms, e.underruns, bmsg))
+            self.auto_protect()
             if e.recording:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             if not e.playing and self._play_which is not None:
                 self._play_which = None
                 self.refresh_buttons()
         self.root.after(40, self.tick)
+
+    def auto_protect(self):
+        """偵測到爆音（緩衝不足）就自動加大緩衝重新連線：128 → 256 → 512 → 1024。"""
+        import time
+        now = time.time()
+        self._ur_hist.append((now, self.eng.underruns))
+        self._ur_hist = [(t, u) for t, u in self._ur_hist if now - t < 3.0]
+        if len(self._ur_hist) < 2:
+            return
+        grew = self._ur_hist[-1][1] - self._ur_hist[0][1]
+        if grew >= 3 and self.block_now < 1024:
+            self.block_now *= 2
+            if self.ultra.get():
+                self.ultra.set(0)
+            self.eng.stop()
+            self.start_engine(0)
+            self.msg.config(text="偵測到爆音，已自動加大緩衝（%d）。聲音會晚一點點，但不會再爆音。" % self.block_now)
 
     def on_close(self):
         try:

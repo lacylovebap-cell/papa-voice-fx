@@ -78,6 +78,22 @@ check("各管道波形有跳動", a.wave_inp.hist[-1] > 0 and a.wave_bgm.hist[-1
 a.eng.running = False
 a.toggle_adv(); root.update(); a.toggle_adv()
 check("進階設定可以展開收起", True)
+a.preset("electro"); a.clear_fx()
+check("無效果：一鍵清掉所有效果", a.active_preset is None and fx.params["mode"] == "off")
+check("狀態文字：聲卡變音＋無效果", "聲卡變音" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"))
+check("超低延遲預設關閉", a.ultra.get() == 0)
+# 自動防爆音：緩衝不足一直增加 → 區塊加大
+import types
+a.eng.running = True
+starts = []
+a.start_engine = lambda u: starts.append(a.block_now)
+a.eng.stop = lambda: None
+ur = [0]
+type(a.eng).underruns = property(lambda self: ur[0])
+a._ur_hist = []; a.block_now = 256
+a.auto_protect(); ur[0] = 5; a.auto_protect()
+check("爆音時自動加大緩衝", a.block_now == 512 and starts == [512], str(starts))
+a.eng.running = False
 a.refresh_buttons()
 root.update()
 check("按鈕文字顯示鎖定", "開著" in str(a.btn_card.cget("text")))
