@@ -72,6 +72,7 @@ a.preset("sing")
 a.eng.running = True
 a.eng.lv.update(inp=0.5, mon=0.3, out=0.4, bgm=0.2)
 a.tick(); root.update()
+check("狀態面板：顯示目前功能", "聲卡變音" in a.st_funcs.cget("text"))
 check("各管道波形有跳動", a.wave_inp.hist[-1] > 0 and a.wave_bgm.hist[-1] > 0 and a.wave_out.hist[-1] > 0)
 a.eng.running = False
 a.toggle_adv(); root.update(); a.toggle_adv()

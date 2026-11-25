@@ -198,7 +198,24 @@ class App:
         self.btn_card = self.button(top, "", self.toggle_card, size=13)
         self.btn_card.pack(side="left", padx=10, fill="x", expand=True)
         self.msg = self.label(wrap, "戴好耳機，按「開始」。", 10, C_SUB, anchor="w")
-        self.msg.pack(fill="x", pady=(6, 8))
+        self.msg.pack(fill="x", pady=(6, 6))
+
+        # ---- 狀態面板：一眼看懂現在的聲音
+        sp = tk.Frame(wrap, bg="#0e0c16", padx=14, pady=10, highlightthickness=1, highlightbackground="#3a3550")
+        sp.pack(fill="x", pady=(0, 8))
+        r1 = tk.Frame(sp, bg="#0e0c16"); r1.pack(fill="x")
+        self.label(r1, "你唱的音", 10, C_SUB).grid(row=0, column=0, sticky="w")
+        self.label(r1, "", 10, C_SUB).grid(row=0, column=1, padx=18)
+        self.label(r1, "送出去的音", 10, C_SUB).grid(row=0, column=2, sticky="w")
+        self.st_in = self.label(r1, "—", 26, C_CYAN, True, width=5, anchor="w")
+        self.st_in.grid(row=1, column=0, sticky="w")
+        self.label(r1, "→", 22, C_SUB).grid(row=1, column=1, padx=18)
+        self.st_out = self.label(r1, "—", 26, C_PINK, True, width=5, anchor="w")
+        self.st_out.grid(row=1, column=2, sticky="w")
+        self.st_diff = self.label(r1, "", 11, C_SUB, justify="left", anchor="w")
+        self.st_diff.grid(row=1, column=3, sticky="w", padx=(18, 0))
+        self.st_funcs = self.label(sp, "", 12, C_TXT, True, anchor="w", justify="left")
+        self.st_funcs.pack(fill="x", pady=(8, 0))
 
         # ---- 聲音管道：名稱／裝置／音量／跳動波形
         box = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
@@ -218,8 +235,7 @@ class App:
         fx = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         fx.pack(fill="x", pady=10)
         self.label(fx, "效果（再按一次＝關掉）", 11, C_PINK, True).pack(anchor="w", pady=(0, 2))
-        self.now_label = self.label(fx, "", 12, C_YELLOW, True, anchor="w")
-        self.now_label.pack(fill="x", pady=(0, 6))
+        self.now_label = self.label(fx, "", 1, C_CARD)   # 保留給測試用（不顯示內容）
         row = tk.Frame(fx, bg=C_CARD)
         row.pack(fill="x")
         self.preset_btns = {}
@@ -238,8 +254,7 @@ class App:
 
         self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n兩個都已經包含人聲修飾的音色，不用另外調。",
                    9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
-        self.note_label = self.label(fx, "", 10, C_SUB, anchor="w")
-        self.note_label.pack(fill="x", pady=(6, 0))
+        self.note_label = self.label(fx, "", 1, C_CARD)
 
         # ---- 錄音
         rc = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
@@ -467,6 +482,13 @@ class App:
             extra = "（%s）" % self.el_style.get()
         col = ""
         self.now_label.config(text="現在送出去的聲音 ＝ %s ＋ %s%s%s" % (voice, fxname, extra, col))
+        mark = lambda ok: "✅" if ok else "⬜"
+        kind = {"talk": "說話（只修飾音色，不修音）", "sing": "自然修音（拉準走音、保留顫音）",
+                "electro": "電音人聲（%s）" % self.el_style.get(), "phone": "電話音", "machine": "答錄機音"}
+        self.st_funcs.config(text="目前功能：　%s 聲卡變音　　%s %s　　%s 伴奏" % (
+            mark(on), mark(self.active_preset is not None),
+            kind.get(self.active_preset, "沒有修音、沒有電音（一般聲音）"), mark(bool(self.bgm_on.get()))),
+            fg=C_TXT if on else C_YELLOW)
         for k, btn in self.preset_btns.items():
             c = C_GREEN if self.active_preset == k else C_BTN
             btn.config(bg=c, activebackground=c, fg="#0b2216" if self.active_preset == k else C_TXT)
@@ -549,12 +571,16 @@ class App:
             getattr(self, "wave_" + k).push(e.lv[k] if run else 0.0)
         if run:
             f, det, tgt = e.info
-            if det is not None:
-                k = e.fx.tuner.keyt.key if e.fx is not None else None
-                ks = ("　｜　聽起來是 %s 大調" % KEY_NAMES[k]) if (k is not None and self.mode.get() in ("natural", "electro")) else ""
-                self.note_label.config(text="你唱的音：" + note_name(det) + ("  →  修成：" + note_name(tgt) if tgt is not None else "") + ks)
+            if det is not None and e.fx is not None:
+                outp = det + e.fx.tuner.cur          # 實際送出去的音高 ＝ 唱的音 ＋ 目前移動量
+                self.st_in.config(text=note_name(det))
+                self.st_out.config(text=note_name(outp))
+                k = e.fx.tuner.keyt.key
+                ks = ("聽起來是 %s 大調" % KEY_NAMES[k]) if (k is not None and self.mode.get() in ("natural", "electro")) else ""
+                d = (outp - det) * 100
+                self.st_diff.config(text="（%s %d 音分）%s" % ("升高" if d >= 0 else "降低", abs(round(d)), ("\n" + ks) if ks else ""))
             else:
-                self.note_label.config(text="")
+                self.st_in.config(text="—"); self.st_out.config(text="—"); self.st_diff.config(text="（沒有聲音）")
             bk = e.backing
             bmsg = ""
             if e.backing_error or (bk is not None and bk.error):
