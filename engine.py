@@ -153,6 +153,17 @@ class BackingCapture:
         self.th = None
 
 
+def rescan():
+    """重新讀取 Windows 的音效裝置（插拔裝置、安裝 VB-Cable 之後，舊的編號會失效）。"""
+    if sd is None:
+        return
+    try:
+        sd._terminate()
+        sd._initialize()
+    except Exception:
+        pass
+
+
 def list_devices():
     """回傳 (輸入清單, 輸出清單)，每項 (index, 名稱)。Windows 只列 WASAPI，避免重複。"""
     if sd is None:

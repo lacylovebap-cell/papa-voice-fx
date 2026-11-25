@@ -291,7 +291,7 @@ class App:
                        selectcolor="#13111c", activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
         self._slider(self.adv, 1, "直播對齊微調（人聲搶拍往右、拖拍往左）", self.bgm_trim, -80, 80, "{:+.0f} ms")
         self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
-        self.button(self.adv, "重新尋找裝置", self.refresh_devices, size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
         self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：1 說話　2 唱歌　3 電音　4 電話　5 答錄機　6 聲卡變音　B 伴奏　R 錄音",
@@ -331,7 +331,9 @@ class App:
             self.btn_adv.config(text="⚙ 進階設定 ▸")
 
     # ------------------------------------------------------------ 裝置
-    def refresh_devices(self):
+    def refresh_devices(self, rescan=False):
+        if rescan and not self.eng.running:
+            engine.rescan()
         try:
             ins, outs = engine.list_devices()
         except Exception as e:
@@ -378,7 +380,7 @@ class App:
             return
         self.start_engine(self.ultra.get())
 
-    def start_engine(self, ultra):
+    def start_engine(self, ultra, retried=False):
         try:
             in_dev = self.in_map[self.dev_in.get()]
             mon_dev = self.out_map[self.dev_mon.get()]
@@ -397,9 +399,14 @@ class App:
                            backing=None if bgm in ("", NONE) else bgm, ultra=bool(ultra))
         except Exception as e:
             log_error(traceback.format_exc())
+            if not retried and ("Invalid device" in str(e) or "-9996" in str(e) or "-9997" in str(e)):
+                # 裝置編號過期：重新讀取裝置，用名稱重新對應後再試一次
+                self.eng.stop()
+                self.refresh_devices(True)
+                return self.start_engine(ultra, retried=True)
             if ultra:
                 self.ultra.set(0)
-                return self.start_engine(0)
+                return self.start_engine(0, retried)
             self.msg.config(text="啟動失敗：%s" % e)
             messagebox.showerror("啟動失敗", str(e))
             return
