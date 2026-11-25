@@ -70,6 +70,7 @@ def log_error(text):
 
 # 電音風格（參數來自 Auto-Tune 常用設定：修正速度 ms、Flex-Tune、Humanize、電音質感）
 EL_STYLES = {
+    "超電（最強）": (0, 0, 0, 70),
     "流行網感（微微電音）": (30, 25, 60, 30),
     "抒情": (20, 20, 20, 20),
     "現代流行": (40, 0, 20, 40),
@@ -165,9 +166,9 @@ class App:
         self.verb = self.var("verb", 15, D)
         self.deess = self.var("deess", 40, D)
         self.g_dry = self.var("g_dry", 0, D)
-        self.el_style = self.var("el_style", "流行網感（微微電音）")
+        self.el_style = self.var("el_style2", "超電（最強）")
         if self.el_style.get() not in EL_STYLES:
-            self.el_style.set("流行網感（微微電音）")
+            self.el_style.set("超電（最強）")
         self.color = tk.StringVar(value="原本")   # 音色跟著效果走（不另外選）
         # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
         for k, v in NEUTRAL.items():

@@ -60,6 +60,8 @@ a.preset("electro")
 check("電音：自動跟調模式", fx.params["mode"] == "electro")
 a.el_style.set("說唱（最電）"); a.apply()
 s_hard = fx.params["speed"]
+a.el_style.set("超電（最強）"); a.apply()
+check("超電：修正速度 0、不放過任何偏音", fx.params["speed"] == 0 and fx.params["flex"] == 0 and fx.params["humanize"] == 0)
 a.el_style.set("流行網感（微微電音）"); a.apply()
 check("電音風格：說唱比流行網感更硬", s_hard < fx.params["speed"] and fx.params["humanize"] > 0.5)
 check("電音已包含人聲修飾音色（不用另外選）", fx.params["color"] == "人聲修飾")
