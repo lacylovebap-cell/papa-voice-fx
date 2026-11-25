@@ -124,8 +124,11 @@ class App:
         self.dev_mon = self.var("dev_mon", "")
         self.dev_out = self.var("dev_out", "")
         self.cb_in = self._combo(left, "麥克風輸入（你的聲卡）", self.dev_in)
+        self.cb_in.bind("<<ComboboxSelected>>", lambda e: self.schedule_save())
         self.cb_mon = self._combo(left, "監聽輸出（耳機，插在聲卡上）", self.dev_mon)
         self.cb_out = self._combo(left, "直播輸出（選 CABLE Input）", self.dev_out)
+        self.dev_bgm = self.var("dev_bgm", "（不使用）")
+        self.cb_bgm = self._combo(left, "伴奏來源（瀏覽器播到的裝置，例如 Realtek Digital Output）", self.dev_bgm)
         self.block = self.var("block", "256")
         self.excl = self.var("excl", 0, tk.IntVar)
         self.lowlat = self.var("lowlat", 0, tk.IntVar)
@@ -158,7 +161,7 @@ class App:
             self.preset_btns[key] = b
         pf.columnconfigure(0, weight=1)
         pf.columnconfigure(1, weight=1)
-        ttk.Label(left, text="全域快捷鍵（再按一次＝關閉）：Ctrl+Alt+ 1說話 2唱歌 3電音 4電話 5答錄機 6聲卡變音鎖定\nE=電音開關  P=電話音開關  M=答錄機開關  R=錄音開關",
+        ttk.Label(left, text="全域快捷鍵（再按一次＝關閉）：Ctrl+Alt+ 1說話 2唱歌 3電音 4電話 5答錄機 6聲卡變音鎖定\nE=電音  P=電話音  M=答錄機  R=錄音  B=伴奏",
                   foreground="#666", justify="left").pack(anchor="w", pady=4)
 
         ttk.Label(left, text="④ 錄音與回放", style="H.TLabel").pack(anchor="w", pady=(10, 2))
@@ -227,6 +230,16 @@ class App:
         self.slider(mid, "電話音失真", self.phone_dist, 0, 100, "{:.0f}%")
         ttk.Checkbutton(mid, text="答錄機音（乾淨版：像從答錄機小喇叭播出，不失真）", variable=self.machine, command=self.apply).pack(anchor="w", pady=(6, 0))
 
+        # ---- 右：伴奏
+        ttk.Label(right, text="伴奏（不會被變音）", style="H.TLabel").pack(anchor="w")
+        self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
+        self.btn_bgm = ttk.Button(right, command=self.toggle_bgm)
+        self.btn_bgm.pack(fill="x")
+        self.g_bgm = self.var("g_bgm", 80, tk.DoubleVar)
+        self.slider(right, "伴奏音量", self.g_bgm, 0, 150, "{:.0f}%")
+        self.bgm_meter = ttk.Progressbar(right, maximum=100, length=300)
+        self.bgm_meter.pack(fill="x", pady=(0, 10))
+
         # ---- 右：音色與音量
         ttk.Label(right, text="⑥ 音色", style="H.TLabel").pack(anchor="w")
         self.eq_lo = self.var("eq_lo", 0, tk.DoubleVar)
@@ -282,6 +295,10 @@ class App:
         self.cb_in["values"] = list(self.in_map)
         self.cb_mon["values"] = list(self.out_map)
         self.cb_out["values"] = ["（不使用）"] + list(self.out_map)
+        bg = engine.list_backing_sources()
+        self.cb_bgm["values"] = ["（不使用）"] + bg
+        if self.dev_bgm.get() not in bg:
+            self.dev_bgm.set("（不使用）")
         di, do = engine.default_devices()
         names_in = list(self.in_map)
         names_out = list(self.out_map)
@@ -311,8 +328,10 @@ class App:
             return
         self.apply()
         try:
+            bgm = self.dev_bgm.get()
             self.eng.start(in_dev, mon_dev, out_dev, block=int(self.block.get()),
-                           exclusive=bool(exclusive), low_latency=bool(self.lowlat.get()))
+                           exclusive=bool(exclusive), low_latency=bool(self.lowlat.get()),
+                           backing=None if bgm in ("", "（不使用）") else bgm)
         except Exception as e:
             log_error(traceback.format_exc())
             if exclusive:
@@ -348,6 +367,8 @@ class App:
         self.eng.set_gain("mon", self.g_mon.get() / 100)
         self.eng.set_gain("dry", self.g_dry.get() / 100)
         self.eng.set_gain("out", self.g_out.get() / 100)
+        self.eng.set_gain("bgm", self.g_bgm.get() / 100)
+        self.eng.bgm_on = bool(self.bgm_on.get())
         self.schedule_save()
 
     def preset(self, name):
@@ -372,7 +393,13 @@ class App:
             self.card.set(1)
         self.apply()
 
+    def toggle_bgm(self):
+        self.bgm_on.set(0 if self.bgm_on.get() else 1)
+        self.apply()
+
     def refresh_buttons(self):
+        self.btn_bgm.config(text="🎵 伴奏：開（按這裡關）" if self.bgm_on.get() else "🔇 伴奏：關（按這裡開）",
+                            style="On.TButton" if self.bgm_on.get() else "TButton")
         on = bool(self.card.get())
         self.btn_card.config(text=("🔒 聲卡變音：鎖定中（按這裡關閉）" if on else "⚠ 聲卡變音已關閉＝原音！（按這裡打開）"),
                              style="Lock.TButton" if on else "Unlock.TButton")
@@ -459,7 +486,7 @@ class App:
             "<ctrl>+<alt>+3": ui(self.preset, "electro"), "<ctrl>+<alt>+4": ui(self.preset, "phone"),
             "<ctrl>+<alt>+5": ui(self.preset, "machine"), "<ctrl>+<alt>+6": ui(self.toggle_card),
             "<ctrl>+<alt>+e": ui(electro), "<ctrl>+<alt>+p": ui(toggler(self.phone)),
-            "<ctrl>+<alt>+m": ui(toggler(self.machine)), "<ctrl>+<alt>+r": ui(self.toggle_rec),
+            "<ctrl>+<alt>+m": ui(toggler(self.machine)), "<ctrl>+<alt>+b": ui(self.toggle_bgm), "<ctrl>+<alt>+r": ui(self.toggle_rec),
         }
         try:
             self._hk = keyboard.GlobalHotKeys(hk)
@@ -480,7 +507,12 @@ class App:
                 self.note_label.config(text=note_name(det) + ("  →  " + note_name(tgt) if tgt is not None else ""))
                 self.hz_label.config(text="%.0f Hz" % f)
             self.meter["value"] = min(100, e.level * 110)
-            self.status.config(text="預估延遲約 %.0f ms（另加電音處理 10～20 ms）\n緩衝不足次數：%d" % (e.latency_ms, e.underruns))
+            bk = e.backing
+            bmsg = ""
+            if e.backing_error or (bk is not None and bk.error):
+                bmsg = "\n伴奏擷取失敗：" + str(e.backing_error or bk.error)
+            self.bgm_meter["value"] = min(100, (bk.level if bk is not None else 0) * 110)
+            self.status.config(text="預估延遲約 %.0f ms（另加電音處理 10～20 ms）\n緩衝不足次數：%d%s" % (e.latency_ms, e.underruns, bmsg))
             if e.recording:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             elif e.playing:

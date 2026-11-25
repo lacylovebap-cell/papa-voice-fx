@@ -49,6 +49,12 @@ check("確認後才關閉聲卡變音", a.card.get() == 0 and fx.params["card"] 
 a.toggle_card()
 check("再按一次：重新鎖定", a.card.get() == 1 and fx.params["card"] is True)
 
+b0 = a.eng.bgm_on
+a.toggle_bgm()
+check("伴奏開關：再按一次切換", a.eng.bgm_on != b0)
+a.toggle_bgm()
+check("伴奏開關：恢復", a.eng.bgm_on == b0)
+check("伴奏來源清單可讀取", isinstance(list(a.cb_bgm["values"]), list))
 a.refresh_buttons()
 root.update()
 check("按鈕文字顯示鎖定", "鎖定中" in str(a.btn_card.cget("text")))

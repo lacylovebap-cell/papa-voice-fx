@@ -135,11 +135,34 @@ check("回放內容 = 錄到的處理後聲音", abs(est_freq(played[:SR // 2 + 
 check("播完自動停止", not eng.playing)
 eng.set_params(mode="off")
 
+# 伴奏：直接混入，不被變音
+eng.set_params(mode="off", card=True)
+eng.bgm_ring = engine.Ring(BLOCK * 32)
+eng.set_gain("bgm", 1.0)
+tb = np.arange(len(sig)) / SR
+bgm = (0.2 * np.sin(2 * np.pi * 500 * tb)).astype(np.float32)
+mon_out, cab = [], []
+for s in range(0, len(sig), BLOCK):
+    eng.bgm_ring.write(bgm[s:s + BLOCK])
+    inp.cb(sig[s:s + BLOCK].reshape(-1, 1), BLOCK, None, None)
+    o1 = np.zeros((BLOCK, 2), np.float32); mon.cb(o1, BLOCK, None, None); mon_out.append(o1[:, 0])
+    o2 = np.zeros((BLOCK, 2), np.float32); out.cb(o2, BLOCK, None, None); cab.append(o2[:, 0])
+cab = np.concatenate(cab)[SR // 2:]
+sp = np.abs(np.fft.rfft(cab * np.hanning(len(cab)))); fr = np.fft.rfftfreq(len(cab), 1 / SR)
+pk = lambda f: sp[np.abs(fr - f) < 3].max()
+check("伴奏 500Hz 原樣出現在直播輸出（沒被變音）", pk(500) > 10 * pk(500 * 2 ** (1.5 / 12)), f"{pk(500):.0f} vs {pk(500*2**(1.5/12)):.0f}")
+check("人聲仍有聲卡變音（226→升 1.5 半音）", pk(226 * 2 ** (1.5 / 12)) > 5 * pk(226))
+eng.bgm_on = False
+inp.cb(np.zeros((BLOCK, 1), np.float32), BLOCK, None, None)
+eng.bgm_ring = None
+eng.set_params(card=False)
+
 # 增益
 eng.set_gain("mon", 1.0)
 eng.set_gain("mon", 0.0)
-inp.cb(sig[:BLOCK].reshape(-1, 1), BLOCK, None, None)
-o1 = np.zeros((BLOCK, 2), np.float32); mon.cb(o1, BLOCK, None, None)
+for _ in range(8):   # 先把緩衝裡的舊聲音播完
+    inp.cb(sig[:BLOCK].reshape(-1, 1), BLOCK, None, None)
+    o1 = np.zeros((BLOCK, 2), np.float32); mon.cb(o1, BLOCK, None, None)
 check("監聽音量 0 時監聽靜音", float(np.max(np.abs(o1))) < 1e-6)
 
 # 停止

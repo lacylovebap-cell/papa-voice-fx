@@ -2,3 +2,4 @@ numpy
 scipy
 sounddevice>=0.4.6
 pynput
+soundcard

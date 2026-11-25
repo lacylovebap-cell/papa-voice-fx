@@ -17,6 +17,14 @@ else:
 
 from dsp import VoiceFx
 
+try:
+    import soundcard as sc   # 用來擷取「別的程式正在播的聲音」（WASAPI loopback）
+except Exception as e:
+    sc = None
+    SC_ERROR = e
+else:
+    SC_ERROR = None
+
 SR = 48000
 
 
@@ -90,6 +98,61 @@ class Ring:
             return out
 
 
+def list_backing_sources():
+    """可以擷取伴奏的來源：每個輸出裝置的「正在播放的聲音」。回傳名稱清單。"""
+    if sc is None:
+        return []
+    try:
+        return [m.name for m in sc.all_microphones(include_loopback=True) if getattr(m, "isloopback", False)]
+    except Exception:
+        return []
+
+
+class BackingCapture:
+    """在背景執行緒擷取某個輸出裝置正在播的聲音（伴奏），放進 Ring。"""
+
+    def __init__(self, name, ring, block):
+        self.name, self.ring, self.block = name, ring, block
+        self.running = False
+        self.error = None
+        self.level = 0.0
+        self.th = None
+
+    def start(self):
+        if sc is None:
+            raise RuntimeError("缺少 soundcard 套件：%s" % SC_ERROR)
+        self.running = True
+        self.th = threading.Thread(target=self._run, daemon=True)
+        self.th.start()
+
+    def _run(self):
+        try:
+            try:
+                import ctypes
+                ctypes.windll.ole32.CoInitializeEx(None, 0)   # 背景執行緒要先初始化 COM
+            except Exception:
+                pass
+            mic = next(m for m in sc.all_microphones(include_loopback=True)
+                       if getattr(m, "isloopback", False) and m.name == self.name)
+            with mic.recorder(samplerate=SR, channels=2, blocksize=self.block) as rec:
+                while self.running:
+                    d = rec.record(numframes=self.block)
+                    if d is None or len(d) == 0:
+                        continue
+                    mono = d.mean(axis=1).astype(np.float32) if d.ndim > 1 else d.astype(np.float32)
+                    self.level = float(np.max(np.abs(mono)))
+                    self.ring.write(mono)
+        except Exception as e:
+            self.error = repr(e)
+            self.running = False
+
+    def stop(self):
+        self.running = False
+        if self.th is not None:
+            self.th.join(timeout=1.0)
+        self.th = None
+
+
 def list_devices():
     """回傳 (輸入清單, 輸出清單)，每項 (index, 名稱)。Windows 只列 WASAPI，避免重複。"""
     if sd is None:
@@ -122,7 +185,10 @@ class Engine:
         self.streams = []
         self.running = False
         self.params = {}
-        self.gains = dict(inp=1.0, mon=1.0, dry=0.0, out=1.0)
+        self.gains = dict(inp=1.0, mon=1.0, dry=0.0, out=1.0, bgm=0.8)
+        self.backing = None
+        self.bgm_ring = None
+        self.bgm_on = True
         self.level = 0.0
         self.info = (0.0, None, None)
         self.block = 256
@@ -205,8 +271,14 @@ class Engine:
             y = self.fx.process(x)
             self.info = self.fx.info
             self.level = float(np.max(np.abs(y))) if len(y) else 0.0
+            # 伴奏：不經過任何變音處理，直接混進監聽與直播
+            if self.bgm_ring is not None:
+                bg = self.bgm_ring.read(len(y), self.block * 3).astype(np.float64)
+                bg *= self.gains["bgm"] if self.bgm_on else 0.0
+            else:
+                bg = 0.0
             if self.recording and self.rec_samples < self.rec_max:
-                self.rec_wet.append((y * self.gains["out"]).astype(np.float32))
+                self.rec_wet.append(np.clip(y * self.gains["out"] + bg, -1, 1).astype(np.float32))
                 self.rec_dry.append(dry.copy())
                 self.rec_samples += len(y)
             pd = self.play_data
@@ -219,10 +291,10 @@ class Engine:
                 if self.play_pos >= len(pd):
                     self.play_data = None
             else:
-                mon = y * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
+                mon = (y + bg) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
             self.mon_ring.write(np.clip(mon, -1.0, 1.0).astype(np.float32))
             if self.out_ring is not None:
-                self.out_ring.write((y * self.gains["out"]).astype(np.float32))
+                self.out_ring.write(np.clip(y * self.gains["out"] + bg, -1, 1).astype(np.float32))
         except Exception as e:  # 回呼內不可丟例外，否則串流會停
             self.last_error = repr(e)
 
@@ -235,7 +307,7 @@ class Engine:
         return cb
 
     # ---- 啟動／停止
-    def start(self, in_dev, mon_dev, out_dev, block=256, exclusive=False, low_latency=False):
+    def start(self, in_dev, mon_dev, out_dev, block=256, exclusive=False, low_latency=False, backing=None):
         if sd is None:
             raise RuntimeError("找不到 sounddevice 套件：%s" % SD_ERROR)
         self.stop()
@@ -280,6 +352,16 @@ class Engine:
             raise
         self.streams = opened
         self.running = True
+        self.backing_error = None
+        if backing:
+            try:
+                self.bgm_ring = Ring(self.block * 32)
+                self.backing = BackingCapture(backing, self.bgm_ring, self.block)
+                self.backing.start()
+            except Exception as e:
+                self.backing_error = str(e)
+                self.backing = None
+                self.bgm_ring = None
         try:
             self.latency_ms = (opened[0].latency + opened[1].latency) * 1000 + 1000.0 * self.block / SR
         except Exception:
@@ -288,6 +370,10 @@ class Engine:
     def stop(self):
         self.running = False
         self.recording = False
+        if self.backing is not None:
+            self.backing.stop()
+        self.backing = None
+        self.bgm_ring = None
         self.play_data = None
         for s in self.streams:
             try:
