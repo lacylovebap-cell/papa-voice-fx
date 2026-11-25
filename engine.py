@@ -31,6 +31,8 @@ class Ring:
         self.n = 0
         self.lock = threading.Lock()
         self.underruns = 0
+        self.frac = 0.0
+        self.primed = False
 
     def write(self, x):
         with self.lock:
@@ -47,21 +49,44 @@ class Ring:
             self.w = (self.w + m) % self.cap
             self.n += m
 
-    def read(self, m, max_lag):
+    def read(self, m, target):
+        """讀 m 個樣本。以極小幅度的重新取樣追蹤緩衝量，避免時脈飄移時整段丟棄或補零（會「啵」一聲）。"""
         with self.lock:
-            if self.n > max_lag:  # 累積太多（延遲變大）→ 丟掉舊的
-                drop = self.n - max_lag
+            if not self.primed:
+                if self.n < target + m:          # 先存夠緩衝再開始播（只多約 2 個區塊延遲）
+                    return np.zeros(m, np.float32)
+                self.primed = True
+            if self.n < m + 4:
+                # 真的不夠：把剩下的淡出到 0，而不是突然變 0
+                out = np.zeros(m, np.float32)
+                k = min(max(0, self.n - 1), m)
+                if k:
+                    idx = (self.r + np.arange(k)) % self.cap
+                    out[:k] = self.buf[idx] * np.linspace(1, 0, k)
+                    self.r = (self.r + k) % self.cap
+                    self.n -= k
+                self.underruns += 1
+                self.primed = False
+                return out
+            if self.n > target * 4:      # 累積過多（例如剛啟動）：一次性跳過，只會發生一次
+                drop = self.n - target
                 self.r = (self.r + drop) % self.cap
                 self.n -= drop
-            out = np.zeros(m, np.float32)
-            k = min(m, self.n)
-            if k:
-                idx = (self.r + np.arange(k)) % self.cap
-                out[:k] = self.buf[idx]
-                self.r = (self.r + k) % self.cap
-                self.n -= k
-            if k < m:
-                self.underruns += 1
+            ratio = 1.0 + max(-0.005, min(0.005, (self.n - target) / max(target, 1) * 0.005))
+            pos = self.frac + np.arange(m) * ratio
+            need = int(np.floor(pos[-1])) + 2
+            need = min(need, self.n)
+            idx = (self.r + np.arange(need)) % self.cap
+            seg = self.buf[idx]
+            i0 = np.minimum(np.floor(pos).astype(np.int64), need - 2)
+            fr = pos - i0
+            out = (seg[i0] * (1 - fr) + seg[i0 + 1] * fr).astype(np.float32)
+            adv = pos[-1] + ratio
+            used = int(np.floor(adv))
+            self.frac = adv - used
+            used = min(used, self.n)
+            self.r = (self.r + used) % self.cap
+            self.n -= used
             return out
 
 
@@ -203,7 +228,7 @@ class Engine:
 
     def _make_out_cb(self, ring):
         def cb(outdata, frames, time_info, status):
-            y = ring.read(frames, self.block * 3)
+            y = ring.read(frames, self.block * 2)
             outdata[:, 0] = y
             if outdata.shape[1] > 1:
                 outdata[:, 1] = y

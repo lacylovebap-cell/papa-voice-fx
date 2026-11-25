@@ -86,6 +86,9 @@ class Tuner:
 
     DEC = 4
     R = 512
+    PREDICT = 2.0    # 往前預測幾個區塊，補償偵測延遲（讓電音更平、更乾脆）
+    CORR_LEN = 384   # 比對長度（樣本）
+    SEARCH = 480     # 搜尋範圍（10 ms，涵蓋 100 Hz 以上一個週期）
     H = 256
 
     def __init__(self, sr=48000, window_ms=21.0):
@@ -99,6 +102,7 @@ class Tuner:
         self.tau_max = min(self.R - self.H - 1, int(self.srD / 70))
         self.tau_min = max(2, int(self.srD / 900))
         self.cur = 0.0
+        self.raw_prev = 0.0
         self.wet = 0.0
         self.det = 0.0
         self.target = 0.0
@@ -115,6 +119,7 @@ class Tuner:
         self.Wtarget = float(self.W)
         self.tW = [float(self.W), float(self.W)]
         self.tph = [0.0, 0.5]
+        self.toff = [0.0, 0.0]
 
     def update(self, **kw):
         self.p.update(kw)
@@ -179,8 +184,15 @@ class Tuner:
         f = self._detect()
         self.f = f
         if f > 0:
+            raw = 69 + 12 * math.log2(f / 440.0)
+            if self.unv == 0 and abs(raw - self.raw_prev) < 0.7:
+                slope = raw - self.raw_prev            # 每區塊變化量
+                pred = raw + slope * self.PREDICT
+            else:
+                pred = raw
+            self.raw_prev = raw
             self.unv = 0
-            self.det = 69 + 12 * math.log2(f / 440.0)
+            self.det = pred
             cs = p["card_shift"]
             # 聲卡變音鎖定時：先升調再吸附，確保疊加後音準仍正確
             if p["mode"] == "robot":
@@ -213,24 +225,16 @@ class Tuner:
             self.hist = np.concatenate((self.hist, x))[-self.L:]
             return x
 
-        # 依偵測到的音高，把視窗長度對齊成整數個週期（降低變調的粗糙感）
-        if self.voiced and self.f > 0:
-            per = self.sr / self.f
-            # 兩個取樣點相差 W/2，所以 W/2 要是整數個週期，交叉淡化時才會同相位
-            k = max(1, int(round(self.Wbase / (2 * per))))
-            self.Wtarget = min(max(2 * k * per, self.Wbase * 0.5), self.Wbase * 2.0)
-        else:
-            self.Wtarget = self.Wbase
+        self.Wtarget = self.Wbase
         r = 2 ** (self.cur / 12)
         ext = np.concatenate((self.hist, x))
         idx = self.L + np.arange(n)
         ar = np.arange(n)
-        PH, WA = [], []
+        PH, WA, OF = [], [], []
         for tap in (0, 1):
-            Wt = self.tW[tap]
-            ph = self.tph[tap] + (1 - r) / Wt * ar
-            PH.append(ph)
-            WA.append(np.full(n, Wt))
+            PH.append(self.tph[tap] + (1 - r) / self.tW[tap] * ar)
+            WA.append(np.full(n, self.tW[tap]))
+            OF.append(np.full(n, self.toff[tap]))
         for tap in (0, 1):
             ph = PH[tap]
             wrap = np.nonzero((ph >= 1) | (ph < 0))[0]
@@ -239,26 +243,35 @@ class Tuner:
             w0 = wrap[0]
             o = 1 - tap
             Wn = self.Wtarget
-            od = (PH[o][w0] % 1.0) * WA[o][w0]          # 另一個取樣點此刻的延遲
-            if r >= 1:   # 升調：延遲遞減，換相時跳到最大延遲
-                nd = od + Wn / 2
-                p0 = min(max(nd / Wn, 0.9), 0.9999)
-            else:        # 降調：延遲遞增，換相時跳到最小延遲
-                nd = od - Wn / 2
-                p0 = min(max(nd / Wn, 0.0), 0.1)
+            p0 = 0.9999999 if r >= 1 else 0.0       # 一律從增益 0 的位置重新開始
+            # 找最佳接合點：讓新取樣點讀到的聲音和目前正在播的那段最像（避免子音被重複成「啵」）
+            od = OF[o][w0] + (PH[o][w0] % 1.0) * WA[o][w0]
+            po = idx[w0] - od                      # 另一個取樣點此刻的讀取位置
+            pn = idx[w0] - p0 * Wn                 # 新取樣點在偏移 0 時的讀取位置
+            Lc, S = self.CORR_LEN, self.SEARCH
+            ref = ext[int(po) - Lc:int(po)]
+            start = int(pn) - Lc - S
+            if start > 2 and len(ref) == Lc:
+                seg = ext[start:int(pn)]
+                c = np.correlate(seg, ref, mode="valid")[::-1]   # c[k] 對應偏移 k
+                e = np.sqrt(np.convolve(seg * seg, np.ones(Lc), mode="valid")[::-1] + 1e-12)
+                off = float(np.argmax(c / e))
+            else:
+                off = 0.0
             ph[w0:] = p0 + (1 - r) / Wn * np.arange(n - w0)
             WA[tap][w0:] = Wn
+            OF[tap][w0:] = off
             self.tW[tap] = Wn
+            self.toff[tap] = off
         s = np.zeros(n)
         gsum = np.zeros(n)
         for tap in (0, 1):
             ph = PH[tap] % 1.0
             g = 0.5 - 0.5 * np.cos(2 * np.pi * ph)
-            pos = idx - (ph * WA[tap] + 3)
+            pos = idx - (OF[tap] + ph * WA[tap] + 3)
             i1 = np.floor(pos).astype(np.int64)
             t = pos - i1
             y0, y1, y2, y3 = ext[i1 - 1], ext[i1], ext[i1 + 1], ext[i1 + 2]
-            # 4 點 Hermite 內插（比線性內插乾淨）
             c1 = 0.5 * (y2 - y0)
             c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
             c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
@@ -267,7 +280,7 @@ class Tuner:
             self.tph[tap] = float((PH[tap][-1] + (1 - r) / WA[tap][-1]) % 1.0)
         self.hist = ext[-self.L:]
         # 兩個取樣點長度不同時增益和不為 1，正規化避免音量起伏（會聽起來像雜訊）
-        s = s / np.maximum(gsum, 0.25)
+        s = s / np.maximum(gsum, 0.5)
         return x * (1 - wet) + s * wet
 
 
@@ -329,6 +342,49 @@ class Reverb:
         return y
 
 
+# ---------------------------------------------------------------- 電音質感
+class ElectroLayer:
+    """雙重唱（兩個緩慢擺動的延遲副本）＋空氣感高頻＋短回音，讓電音聽起來亮、寬、精緻。"""
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.L = 1 << 15
+        self.buf = np.zeros(self.L)
+        self.w = 0
+        self.t = 0
+        self.air = Biquad("highshelf", 9000, sr, 5.0)
+        self.pres = Biquad("peaking", 4500, sr, 2.5, q=0.9)
+        self.echo = np.zeros(int(sr * 0.5))
+        self.ew = 0
+        self.ed = int(sr * 0.165)
+
+    def process(self, y, amt):
+        n = len(y)
+        L = self.L
+        pos_w = (self.w + np.arange(n)) % L
+        self.buf[pos_w] = y
+        tt = (self.t + np.arange(n)) / self.sr
+        out = np.zeros(n)
+        for base, depth, rate, phase in ((0.017, 0.0022, 0.37, 0.0), (0.023, 0.0026, 0.29, 2.1)):
+            d = (base + depth * np.sin(2 * np.pi * rate * tt + phase)) * self.sr
+            pos = (self.w + np.arange(n)) - d
+            i0 = np.floor(pos).astype(np.int64)
+            fr = pos - i0
+            out += self.buf[i0 % L] * (1 - fr) + self.buf[(i0 + 1) % L] * fr
+        self.w = (self.w + n) % L
+        self.t += n
+        dbl = out * 0.5
+        # 回音（約 1/8 拍，帶一點回授）
+        E = len(self.echo)
+        ri = (self.ew - self.ed + np.arange(n)) % E
+        ech = self.echo[ri].copy()
+        self.echo[(self.ew + np.arange(n)) % E] = y + ech * 0.28
+        self.ew = (self.ew + n) % E
+        wet = y + amt * (0.55 * dbl + 0.22 * ech)
+        bright = self.pres(self.air(wet))
+        return y * (1 - amt) + bright * amt
+
+
 # ---------------------------------------------------------------- 整合
 class VoiceFx:
     CARD_SHIFT = 1.5  # 聲卡變音的升調量（由原聲／說話二比對量測）
@@ -338,7 +394,7 @@ class VoiceFx:
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
-            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False,
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -354,6 +410,7 @@ class VoiceFx:
         # 音色
         self.eq = [Biquad("lowshelf", 150, sr), Biquad("peaking", 2200, sr, q=0.8), Biquad("highshelf", 7000, sr)]
         self.comp = Compressor()
+        self.electro = ElectroLayer(sr)
         self.verb = Reverb(sr)
         self.info = (0.0, None, None)
         self.set()
@@ -426,6 +483,8 @@ class VoiceFx:
         else:
             for f in self.card_eq:
                 f.reset()
+        if self.p["electro_fx"] > 0.001:
+            y = self.electro.process(y, float(self.p["electro_fx"]))
         for f in self.eq:
             y = f(y)
         y = self.comp.process(y)

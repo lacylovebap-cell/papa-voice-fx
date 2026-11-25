@@ -18,14 +18,14 @@ ROBOT_MAP = {"A2": 45, "E3": 52, "A3": 57, "C4": 60, "E4": 64, "A4": 69}
 MODES = [("關", "off"), ("音階吸附", "scale"), ("自動半音", "chrom"), ("機器人", "robot")]
 KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
-NEUTRAL = dict(mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, verb=0, eq_lo=0, eq_mid=0, eq_hi=0)
+NEUTRAL = dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, verb=0, eq_lo=0, eq_mid=0, eq_hi=0)
 PRESET_NAMES = {"talk": "說話", "sing": "唱歌(輕修音)", "electro": "電音歌", "phone": "電話音", "machine": "答錄機音"}
 PRESETS = {
-    "talk": dict(mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, verb=5, eq_lo=0, eq_mid=2, eq_hi=2),
-    "sing": dict(mode="scale", phone=0, machine=0, strength=55, speed=12, shift=0, comp=40, verb=28, eq_lo=1, eq_mid=1, eq_hi=3),
-    "electro": dict(mode="scale", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, verb=18, eq_lo=0, eq_mid=2, eq_hi=3),
-    "phone": dict(mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
-    "machine": dict(mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
+    "talk": dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, verb=5, eq_lo=0, eq_mid=2, eq_hi=2),
+    "sing": dict(electro_fx=0, mode="scale", phone=0, machine=0, strength=55, speed=12, shift=0, comp=40, verb=28, eq_lo=1, eq_mid=1, eq_hi=3),
+    "electro": dict(electro_fx=80, mode="chrom", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, verb=25, eq_lo=0, eq_mid=1, eq_hi=2),
+    "phone": dict(electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
+    "machine": dict(electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
 }
 
 
@@ -216,6 +216,8 @@ class App:
         self.slider(mid, "電音強度（100＝完全吸附）", self.strength, 0, 100, "{:.0f}%")
         self.slider(mid, "修正速度（0＝瞬間跳音最電）", self.speed, 0, 100, "{:.0f}%")
         self.slider(mid, "額外升降調（半音，疊在聲卡變音之上）", self.shift, -12, 12, "{:+.1f}")
+        self.electro_fx = self.var("electro_fx", 0, tk.DoubleVar)
+        self.slider(mid, "電音質感（雙重唱、亮度、回音）", self.electro_fx, 0, 100, "{:.0f}%")
 
         ttk.Label(mid, text="⑤ 特殊音色", style="H.TLabel").pack(anchor="w", pady=(14, 0))
         self.phone = self.var("phone", 0, tk.IntVar)
@@ -335,7 +337,7 @@ class App:
         kw = dict(
             mode=self.mode.get(), key=KEYS.index(self.key.get()), scale=SCALE_MAP.get(self.scale.get(), "major"),
             strength=self.strength.get() / 100, speed=self.speed.get() / 100, shift=round(self.shift.get() * 10) / 10,
-            card=bool(self.card.get()),
+            card=bool(self.card.get()), electro_fx=self.electro_fx.get() / 100,
             robot=ROBOT_MAP.get(self.robot.get(), 57),
             phone=bool(self.phone.get()), phone_dist=self.phone_dist.get() / 100, machine=bool(self.machine.get()),
             eq_lo=round(self.eq_lo.get()), eq_mid=round(self.eq_mid.get()), eq_hi=round(self.eq_hi.get()),

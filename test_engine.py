@@ -153,19 +153,30 @@ check("不接直播輸出時只開兩條串流", len(eng2.streams) == 2 and eng2
 eng2.stop()
 
 # Ring 行為
-r = engine.Ring(1024)
-r.write(np.arange(300, dtype=np.float32))
-a = r.read(100, 4096)
-check("Ring 先進先出", np.array_equal(a, np.arange(100, dtype=np.float32)))
-r.write(np.arange(2000, dtype=np.float32))
-check("Ring 超出容量時不會壞掉", r.n <= 1024)
+r = engine.Ring(4096)
+r.write(np.arange(1000, dtype=np.float32))
+a = r.read(100, 500)
+check("Ring 先進先出", abs(a[0]) <= 1 and abs(a[99] - 99) < 0.6, f"{a[0]} {a[99]}")
+r.write(np.arange(9000, dtype=np.float32))
+check("Ring 超出容量時不會壞掉", r.n <= 4096)
 r2 = engine.Ring(1024)
-b = r2.read(64, 4096)
-check("Ring 空時補 0 並記錄 underrun", np.all(b == 0) and r2.underruns == 1)
-r3 = engine.Ring(4096)
-r3.write(np.arange(1000, dtype=np.float32))
-c = r3.read(10, 100)
-check("Ring 延遲過大時丟掉舊資料", c[0] >= 900, f"first={c[0]}")
+b = r2.read(64, 256)
+check("Ring 未存夠時輸出 0（預先緩衝）", np.all(b == 0))
+r2.write(np.ones(400, np.float32)); r2.read(64, 256); r2.read(400, 256)
+check("Ring 播到不夠時記錄 underrun", r2.underruns == 1)
+# 時脈飄移：寫入比讀取快 0.3%，長時間下不應出現跳躍（爆音）
+r3 = engine.Ring(1 << 15)
+t_in = 0
+outs = []
+f = 440.0
+for i in range(4000):
+    nw = 257 if i % 3 == 0 else 256    # 平均快約 0.13%
+    tt = (t_in + np.arange(nw)) / SR
+    r3.write(np.sin(2 * np.pi * f * tt).astype(np.float32)); t_in += nw
+    outs.append(r3.read(256, 512))
+o = np.concatenate(outs)[SR:]
+jump = np.max(np.abs(np.diff(o)))
+check("時脈飄移時沒有跳躍（不會啵）", jump < 2 * np.pi * f / SR * 1.5 and r3.underruns == 0, f"最大差 {jump:.4f}, underruns={r3.underruns}")
 
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)

@@ -28,7 +28,10 @@ for name in app.PRESETS:
     check(f"再按 {app.PRESET_NAMES[name]}：關閉", a.active_preset is None and fx.params["mode"] == "off"
           and not fx.params["phone"] and not fx.params["machine"] and fx.params["card"] is True)
 
-a.preset("electro"); a.preset("phone")
+a.preset("electro")
+check("電音歌：電音質感開啟", fx.params["electro_fx"] > 0.5 and fx.params["mode"] == "chrom")
+a.preset("phone")
+check("換成電話音：電音質感關掉", fx.params["electro_fx"] == 0)
 check("切換到另一個效果：前一個被取代", a.active_preset == "phone" and fx.params["mode"] == "off" and fx.params["phone"])
 a.preset("phone")
 

@@ -194,6 +194,45 @@ for f0 in (150, 220, 330, 520):
     vals.append(hn(o, f0 * 2 ** (1.5 / 12)))
 check("變調乾淨度（諧波/雜訊 > 35 dB）", min(vals) > 35, " ".join("%.0f" % v for v in vals))
 
+# ---------- 換相時不爆音：每次重新開始的取樣點音量必須是 0
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, card=True)
+xx = melody(np.arange(SR * 3) / SR).astype(np.float32)
+bad = 0; cnt = 0
+for s0 in range(0, len(xx) // 256 * 256, 256):
+    pb = list(fx.tuner.tph); fx.process(xx[s0:s0 + 256])
+    for tp in (0, 1):
+        if abs(fx.tuner.tph[tp] - pb[tp]) > 0.3:
+            cnt += 1
+            # 回推換相當下的相位：升調時應接近 1（增益 0）
+            if not (fx.tuner.tph[tp] > 0.95 or fx.tuner.tph[tp] < 0.05):
+                bad += 1
+check("換相時從 0 音量開始（不會啵）", cnt > 5 and bad == 0, f"換相 {cnt} 次，異常 {bad}")
+
+# ---------- 電音質感層
+x, o0, _ = run(noise, seconds=1.0, mode="chrom")
+x, o1, _ = run(noise, seconds=1.0, mode="chrom", electro_fx=0.8)
+seg0, seg1 = o0[SR // 2:SR // 2 + 16384], o1[SR // 2:SR // 2 + 16384]
+hf = lambda s: band_energy(s, 8000, 14000) / band_energy(s, 500, 2000)
+check("電音質感：高頻更亮", hf(seg1) > hf(seg0) * 1.5, f"{hf(seg1) / hf(seg0):.2f} 倍")
+check("電音質感：輸出有效", np.all(np.isfinite(o1)) and np.max(np.abs(o1)) <= 1.0)
+
+# ---------- 電音能把顫音壓平
+tv = np.arange(SR * 3) / SR
+fv = 220 * 2 ** ((0.4 * np.sin(2 * np.pi * 5.5 * tv)) / 12)
+pv = 2 * np.pi * np.cumsum(fv) / SR
+xv = (0.3 * np.sin(pv) + 0.15 * np.sin(2 * pv)).astype(np.float32)
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="chrom", strength=1.0, speed=0.0)
+ov = np.concatenate([fx.process(xv[s:s + 256]) for s in range(0, len(xv) // 256 * 256, 256)])
+def pitch_sd(o, N=1024):
+    ps = []
+    for s in range(SR, len(o) - N, 240):
+        seg = o[s:s + N].astype(float); ac = np.correlate(seg, seg, "full")[N - 1:]
+        lo, hi = SR // 500, SR // 120; k = lo + np.argmax(ac[lo:hi]); a, b, c = ac[k - 1], ac[k], ac[k + 1]
+        ps.append(1200 * np.log2(SR / (k + (a - c) / (2 * (a - 2 * b + c))) / 220))
+    return np.std(ps)
+sd_in, sd_out = pitch_sd(xv), pitch_sd(ov)
+check("電音把顫音壓平（< 1/3）", sd_out < sd_in / 3, f"{sd_in:.0f} → {sd_out:.1f} cents")
+
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)
 fx.set(mode="scale", key=0, scale="major", strength=1.0, phone=True, machine=True, comp=0.5, verb=0.5, eq_lo=3, eq_mid=2, eq_hi=3)
