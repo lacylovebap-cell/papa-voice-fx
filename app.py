@@ -412,6 +412,8 @@ class App:
             return
         self.btn_start.config(text="■ 停止")
         self._ur_hist = []
+        import time
+        self._started_at = time.time()
         self.msg.config(text="運作中。對著麥克風出聲，看「麥克風」那一行有沒有跳動。")
 
     # ------------------------------------------------------------ 參數
@@ -624,12 +626,15 @@ class App:
         """偵測到爆音（緩衝不足）就自動加大緩衝重新連線：128 → 256 → 512 → 1024。"""
         import time
         now = time.time()
+        if now - getattr(self, "_started_at", 0) < 4.0:     # 剛開始的幾秒一定會有短暫不穩，不算
+            self._ur_hist = []
+            return
         self._ur_hist.append((now, self.eng.underruns))
         self._ur_hist = [(t, u) for t, u in self._ur_hist if now - t < 3.0]
         if len(self._ur_hist) < 2:
             return
         grew = self._ur_hist[-1][1] - self._ur_hist[0][1]
-        if grew >= 3 and self.block_now < 1024:
+        if grew >= 4 and self.block_now < 1024:
             self.block_now *= 2
             if self.ultra.get():
                 self.ultra.set(0)
@@ -645,13 +650,52 @@ class App:
             self.root.destroy()
 
 
+_INSTANCE_PORT = 47391
+
+
+def already_running():
+    """只允許開一個調音台：用本機的一個連接埠當作「已經開著」的記號。
+    如果已經有一個在跑，就通知它跳到最前面，自己結束。"""
+    import socket
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", _INSTANCE_PORT))
+        srv.listen(1)
+        return srv
+    except OSError:
+        try:
+            c = socket.create_connection(("127.0.0.1", _INSTANCE_PORT), timeout=1)
+            c.sendall(b"show")
+            c.close()
+        except Exception:
+            pass
+        return None
+
+
 def main():
+    srv = already_running()
+    if srv is None:
+        return
     if engine.sd is None:
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror("缺少套件", "找不到 sounddevice 套件：\n%s" % engine.SD_ERROR)
         return
     root = tk.Tk()
+
+    def listen():
+        import threading
+
+        def loop():
+            while True:
+                try:
+                    c, _ = srv.accept()
+                    c.close()
+                    root.after(0, lambda: (root.deiconify(), root.lift(), root.focus_force()))
+                except Exception:
+                    return
+        threading.Thread(target=loop, daemon=True).start()
+    listen()
     try:
         App(root)
     except Exception:

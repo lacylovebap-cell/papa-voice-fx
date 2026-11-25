@@ -96,10 +96,19 @@ a.start_engine = lambda u: starts.append(a.block_now)
 a.eng.stop = lambda: None
 ur = [0]
 type(a.eng).underruns = property(lambda self: ur[0])
-a._ur_hist = []; a.block_now = 256
-a.auto_protect(); ur[0] = 5; a.auto_protect()
+a._ur_hist = []; a.block_now = 256; a._started_at = 0
+a.auto_protect(); ur[0] = 6; a.auto_protect()
 check("爆音時自動加大緩衝", a.block_now == 512 and starts == [512], str(starts))
 a.eng.running = False
+# 單一執行個體：第二個不會開起來
+srv1 = app.already_running()
+srv2 = app.already_running()
+check("只能開一個調音台", (srv1 is None) or (srv2 is None))
+for sv in (srv1, srv2):
+    try:
+        sv and sv.close()
+    except Exception:
+        pass
 a.refresh_buttons()
 root.update()
 check("按鈕文字顯示鎖定", "開著" in str(a.btn_card.cget("text")))
