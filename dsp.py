@@ -142,7 +142,10 @@ class Tuner:
         self.dsm = 0.0          # 平滑後的音高（自然修音用）
         self.held = None
         self.kcount = 0
-        self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0)
+        self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0,
+                      flex=0.0, humanize=0.0)
+        self.hold_t = 0.0
+        self.prev_target = None
         self.update(**{})
 
     def set_window(self, ms):
@@ -269,17 +272,34 @@ class Tuner:
                 self.held = None
 
         if active and self.voiced:
+            # Humanize：同一個音唱越久，修正越慢（長音保留自然的起伏）
+            if self.prev_target is not None and self.target == self.prev_target:
+                self.hold_t += n / self.sr
+            else:
+                self.hold_t = 0.0
+            self.prev_target = self.target
             cs = p["card_shift"]
             if p["mode"] == "natural":
                 # 自然修音：只把「音的中心」拉到準的音上，顫音和滑音原樣保留（不會有機械感）
                 want = cs + (self.target - (self.dsm + cs)) * p["strength"] + p["shift"]
             else:
                 want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
-            tau = p["speed"] * 0.4
+            # Flex-Tune：只修離目標音「夠近」的音，離很遠的（刻意的表情、滑音）放過
+            fl = p["flex"]
+            if fl > 0:
+                ref = self.dsm if p["mode"] == "natural" else self.det
+                dev = abs(self.target - (ref + cs))
+                thr = 0.5 - 0.4 * fl
+                w = min(1.0, max(0.0, (thr + 0.12 - dev) / 0.12))
+                want = cs + p["shift"] + (want - cs - p["shift"]) * w
+            tau = p["speed"] * 0.4 + p["humanize"] * 0.3 * min(1.0, self.hold_t / 0.35)
             alpha = 1 - math.exp(-n / (self.sr * tau)) if tau > 0.0005 else 1.0
         else:
             want = p["shift"] + p["card_shift"]
             alpha = 0.15
+        if not self.voiced:
+            self.prev_target = None
+            self.hold_t = 0.0
         if self.voiced and self.unv > 0:
             want = self.cur
         self.cur += (want - self.cur) * alpha
@@ -452,6 +472,16 @@ class ElectroLayer:
         return y * (1 - amt) + bright * amt
 
 
+# ---------------------------------------------------------------- 聲線（直播人聲調音公式）
+VOICE_COLORS = {
+    "原本": [],
+    "少女甜嗓": [(200, -3, 1.0), (2000, 5, 1.8), (4000, 3, 0.8), (8000, -3, 1.0), (16000, 2, 0.3)],
+    "御姐煙嗓": [(80, 4, 0.7), (250, 3, 1.2), (800, -2, 2.0), (3000, -3, 1.5), (12000, 2, 0.5)],
+    "古風戲腔": [(80, -3, 1.2), (250, -2, 1.0), (1500, 3, 0.8), (4000, 4, 1.0), (10000, 3, 1.2)],
+    "ASMR": [(300, 6, 0.5), (1200, -4, 2.0), (4000, 3, 0.8), (8000, 6, 1.5), (12000, 5, 0.3)],
+}
+
+
 # ---------------------------------------------------------------- 整合
 class VoiceFx:
     CARD_SHIFT = 1.5  # 聲卡變音的升調量（由原聲／說話二比對量測）
@@ -461,7 +491,7 @@ class VoiceFx:
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
-            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0,
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本",
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -478,12 +508,14 @@ class VoiceFx:
         self.eq = [Biquad("lowshelf", 150, sr), Biquad("peaking", 2200, sr, q=0.8), Biquad("highshelf", 7000, sr)]
         self.comp = Compressor()
         self.electro = ElectroLayer(sr)
+        self.color_eq = []
+        self._color = None
         self.verb = Reverb(sr)
         self.info = (0.0, None, None)
         self.set()
 
     def set(self, **kw):
-        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot"}
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
         if "card" in kw:
             tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0
@@ -492,6 +524,10 @@ class VoiceFx:
         for k, v in kw.items():
             if k in self.p:
                 self.p[k] = v
+        if self.p["color"] != self._color:
+            self._color = self.p["color"]
+            self.color_eq = [Biquad("peaking", min(f, self.sr * 0.45), self.sr, g, q=q)
+                             for f, g, q in VOICE_COLORS.get(self._color, [])]
         self.eq[0].set_gain(self.p["eq_lo"])
         self.eq[1].set_gain(self.p["eq_mid"])
         self.eq[2].set_gain(self.p["eq_hi"])
@@ -552,6 +588,8 @@ class VoiceFx:
                 f.reset()
         if self.p["electro_fx"] > 0.001:
             y = self.electro.process(y, float(self.p["electro_fx"]))
+        for f in self.color_eq:
+            y = f(y)
         for f in self.eq:
             y = f(y)
         y = self.comp.process(y)

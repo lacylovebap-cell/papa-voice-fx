@@ -268,6 +268,35 @@ check("自然修音：音的中心被拉準", abs(np.median(pn) - 5700) < 12, "�
 check("自然修音：顫音保留（不會有機械感）", np.std(pn) > 0.7 * np.std(pi), "原 %.0f → %.0f cents" % (np.std(pi), np.std(pn)))
 check("電音：顫音被壓平（電音感）", np.std(pe) < 0.5 * np.std(pi), "原 %.0f → %.0f cents" % (np.std(pi), np.std(pe)))
 
+# ---------- Flex-Tune：離目標音很遠的（刻意表情）不修
+xf = tune([57] * 6, dur=0.5, cents=45, vib=0.0)     # 偏 45 cents（很遠）
+xn = tune([57] * 6, dur=0.5, cents=15, vib=0.0)     # 偏 15 cents（很近）
+def center(x, **kw):
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="electro", strength=1.0, speed=0.0, **kw)
+    o = np.concatenate([fx.process(x[s0:s0 + 256]) for s0 in range(0, len(x) // 256 * 256, 256)])
+    return np.median(pitch_track(o)) - 5700
+check("Flex-Tune 0：偏很遠也拉回", abs(center(xf, flex=0.0)) < 12)
+check("Flex-Tune 高：偏很遠的放過", center(xf, flex=0.6) > 30, "%+.0f" % center(xf, flex=0.6))
+check("Flex-Tune 高：偏很近的仍修準", abs(center(xn, flex=0.6)) < 8, "%+.0f" % center(xn, flex=0.6))
+
+# ---------- Humanize：長音保留起伏，短音照樣修
+xh = tune([57] * 4, dur=1.0, cents=0, vib=0.25)
+def vib_after(x, **kw):
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="electro", strength=1.0, speed=0.0, **kw)
+    o = np.concatenate([fx.process(x[s0:s0 + 256]) for s0 in range(0, len(x) // 256 * 256, 256)])
+    return np.std(pitch_track(o))
+v0, v1 = vib_after(xh, humanize=0.0), vib_after(xh, humanize=1.0)
+check("Humanize：長音的自然起伏保留更多", v1 > v0 * 1.8, "%.0f → %.0f cents" % (v0, v1))
+
+# ---------- 聲線 EQ
+from dsp import VOICE_COLORS
+for name in VOICE_COLORS:
+    x, o, _ = run(noise, seconds=0.6, color=name)
+    check("聲線「%s」輸出有效" % name, np.all(np.isfinite(o)) and np.max(np.abs(o)) <= 1.0)
+x, o, _ = run(noise, seconds=1.0, color="少女甜嗓")
+g2k = band_energy(o[SR // 2:SR // 2 + 16384], 1800, 2200) / band_energy(x[SR // 2:SR // 2 + 16384], 1800, 2200)
+check("少女甜嗓：2kHz 提升", 10 * np.log10(g2k) > 3, "%.1f dB" % (10 * np.log10(g2k)))
+
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)
 fx.set(mode="scale", key=0, scale="major", strength=1.0, phone=True, machine=True, comp=0.5, verb=0.5, eq_lo=3, eq_mid=2, eq_hi=3)

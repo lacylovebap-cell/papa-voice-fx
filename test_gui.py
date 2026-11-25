@@ -29,7 +29,7 @@ for name in app.PRESETS:
           and not fx.params["phone"] and not fx.params["machine"] and fx.params["card"] is True)
 
 a.preset("electro")
-check("電音：電音質感開啟", fx.params["electro_fx"] > 0.5 and fx.params["mode"] == "electro")
+check("電音：電音質感開啟", fx.params["electro_fx"] > 0.1 and fx.params["mode"] == "electro")
 a.preset("phone")
 check("換成電話音：電音質感關掉", fx.params["electro_fx"] == 0)
 check("切換到另一個效果：前一個被取代", a.active_preset == "phone" and fx.params["mode"] == "off" and fx.params["phone"])
@@ -58,14 +58,17 @@ check("伴奏來源清單可讀取", isinstance(list(a.cb_bgm["values"]), list))
 # 電音與自然修音：自動判斷調，不用選調
 a.preset("electro")
 check("電音：自動跟調模式", fx.params["mode"] == "electro")
-a.el_hard.set(100); a.apply()
-check("電音最硬：修正速度 0", abs(fx.params["speed"]) < 1e-9)
-a.el_hard.set(0); a.apply()
-check("電音最軟：修正速度變慢", fx.params["speed"] > 0.2)
+a.el_style.set("說唱（最電）"); a.apply()
+s_hard = fx.params["speed"]
+a.el_style.set("流行網感（微微電音）"); a.apply()
+check("電音風格：說唱比流行網感更硬", s_hard < fx.params["speed"] and fx.params["humanize"] > 0.5)
+a.color.set("少女甜嗓"); a.apply()
+check("聲線：少女甜嗓", fx.params["color"] == "少女甜嗓")
+a.color.set("原本"); a.apply()
 a.preset("electro")
 check("再按電音：關掉", fx.params["mode"] == "off")
 a.preset("sing")
-check("自然修音：自動跟調、保留顫音模式", fx.params["mode"] == "natural")
+check("自然修音：自動跟調、保留顫音模式", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0)
 a.preset("sing")
 # 跳動波形
 a.eng.running = True

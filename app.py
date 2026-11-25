@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import engine
-from dsp import note_name, KEY_NAMES
+from dsp import note_name, KEY_NAMES, VOICE_COLORS
 
 APP = "PaPaVoiceFx"
 NONE = "（不使用）"
@@ -68,9 +68,15 @@ def log_error(text):
         pass
 
 
-def hard_to_speed(h):
-    """電音軟硬（0＝最軟、100＝最硬）→ 修正速度。60 大約比舊聲卡的電音軟一點。"""
-    return 0.25 * (1 - float(h) / 100)
+# 電音風格（參數來自 Auto-Tune 常用設定：修正速度 ms、Flex-Tune、Humanize、電音質感）
+EL_STYLES = {
+    "流行網感（微微電音）": (30, 25, 60, 30),
+    "抒情": (20, 20, 20, 20),
+    "現代流行": (40, 0, 20, 40),
+    "說唱（最電）": (10, 5, 10, 60),
+}
+# 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
+NATURAL = (60, 20, 100)
 
 
 class Wave(tk.Canvas):
@@ -156,7 +162,12 @@ class App:
         self.bgm_trim = self.var("bgm_trim", 0, D)
         self.verb = self.var("verb", 0, D)
         self.g_dry = self.var("g_dry", 0, D)
-        self.el_hard = self.var("el_hard", 60, D)
+        self.el_style = self.var("el_style", "流行網感（微微電音）")
+        if self.el_style.get() not in EL_STYLES:
+            self.el_style.set("流行網感（微微電音）")
+        self.color = self.var("color", "原本")
+        if self.color.get() not in VOICE_COLORS:
+            self.color.set("原本")
         # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
         for k, v in NEUTRAL.items():
             setattr(self, k, self.var(k, v, tk.StringVar if k == "mode" else D, remember=False))
@@ -216,11 +227,15 @@ class App:
             self.preset_btns[key] = b
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
-        self.label(el, "電音　軟", 10).pack(side="left")
-        ttk.Scale(el, from_=0, to=100, variable=self.el_hard, orient="horizontal", length=160,
-                  command=lambda v: self.apply()).pack(side="left", padx=4)
-        self.label(el, "硬", 10).pack(side="left")
-        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝一格一格跳的電音人聲。",
+        self.label(el, "電音風格：", 10).pack(side="left")
+        c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="readonly", width=18)
+        c1.pack(side="left")
+        c1.bind("<<ComboboxSelected>>", lambda e: self.apply())
+        self.label(el, "　聲線：", 10).pack(side="left")
+        c2 = ttk.Combobox(el, textvariable=self.color, values=list(VOICE_COLORS), state="readonly", width=9)
+        c2.pack(side="left")
+        c2.bind("<<ComboboxSelected>>", lambda e: self.apply())
+        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n聲線＝整體音色（少女甜嗓、御姐煙嗓…），任何效果都適用。",
                    9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
         self.note_label = self.label(fx, "", 10, C_SUB, anchor="w")
         self.note_label.pack(fill="x", pady=(6, 0))
@@ -369,15 +384,21 @@ class App:
         mode = self.mode.get()
         strength = float(self.strength.get()) / 100
         speed = float(self.speed.get()) / 100
+        flex = humanize = 0.0
+        electro_fx = float(self.electro_fx.get()) / 100
         if self.active_preset == "electro":
-            strength, speed = 1.0, hard_to_speed(self.el_hard.get())   # 軟硬由滑桿決定
-        kw = dict(
+            ms, fl, hu, efx = EL_STYLES[self.el_style.get()]
+            strength, speed, flex, humanize, electro_fx = 1.0, ms / 400, fl / 100, hu / 100, efx / 100
+        elif self.active_preset == "sing":
+            ms, fl, hu = NATURAL
+            strength, speed, flex, humanize = 1.0, ms / 400, fl / 100, hu / 100
+        kw = dict(flex=flex, humanize=humanize, color=self.color.get(),
             mode=mode, key=0, scale="major", strength=strength, speed=speed,
             shift=float(self.shift.get()), robot=57,
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
             eq_lo=float(self.eq_lo.get()), eq_mid=float(self.eq_mid.get()), eq_hi=float(self.eq_hi.get()),
             comp=float(self.comp.get()) / 100, verb=float(self.verb.get()) / 100,
-            card=bool(self.card.get()), electro_fx=float(self.electro_fx.get()) / 100,
+            card=bool(self.card.get()), electro_fx=electro_fx,
         )
         self.eng.set_params(**kw)
         for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm)):
