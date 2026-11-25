@@ -211,6 +211,18 @@ eng2.start(0, 1, None, block=BLOCK)
 check("不接直播輸出時只開兩條串流", len(eng2.streams) == 2 and eng2.out_ring is None)
 eng2.stop()
 
+# 每種緩衝大小 × 全部效果都要能處理（防止自動加大緩衝後出錯）
+full = dict(mode="electro", strength=1.0, speed=0.05, card=True, comp=0.5, verb=0.91, deess=0.4,
+            phone=True, machine=True, electro_fx=0.6, color="人聲修飾", flex=0.2, humanize=0.6)
+for blk in (128, 256, 512, 1024, 2048):
+    e2 = engine.Engine(); e2.set_params(**full); e2.start(0, 1, 2, block=blk)
+    i2, m2, o2 = e2.streams
+    for s in range(0, SR // 2 // blk * blk, blk):
+        i2.cb(sig[s:s + blk].reshape(-1, 1), blk, None, None)
+    check("緩衝 %d：全部效果都正常輸出" % blk, e2.last_error is None and e2.lv["out"] > 0.01 and e2.lv["mon"] > 0.01,
+          str(e2.last_error))
+    e2.stop()
+
 # Ring 行為
 r = engine.Ring(4096)
 r.write(np.arange(1000, dtype=np.float32))

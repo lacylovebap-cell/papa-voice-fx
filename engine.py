@@ -326,6 +326,16 @@ class Engine:
                 self.out_ring.write(o_.astype(np.float32))
         except Exception as e:  # 回呼內不可丟例外，否則串流會停
             self.last_error = repr(e)
+            self.error_count = getattr(self, "error_count", 0) + 1
+            if self.error_count == 1:
+                try:
+                    import traceback, os, datetime
+                    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+                    os.makedirs(os.path.join(base, "PaPaVoiceFx"), exist_ok=True)
+                    with open(os.path.join(base, "PaPaVoiceFx", "error.log"), "a", encoding="utf8") as f:
+                        f.write("[%s] 處理錯誤\n%s\n" % (datetime.datetime.now().isoformat(timespec="seconds"), traceback.format_exc()))
+                except Exception:
+                    pass
 
     def _make_out_cb(self, ring):
         def cb(outdata, frames, time_info, status):
@@ -342,6 +352,7 @@ class Engine:
         self.stop()
         self.block = int(block)
         self.last_error = None
+        self.error_count = 0
         self.out_target = (self.block + 64) if ultra else self.block * 2
         self.fx = VoiceFx(SR, low_latency or ultra)
         self.status_msgs = 0

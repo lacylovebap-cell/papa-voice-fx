@@ -411,9 +411,14 @@ class Reverb:
         self.min_delay = min(self.cd + self.ad)
 
     def process(self, x):
+        # 區塊比最短延遲還長時，切成小段處理（任何緩衝大小都能用）
+        if len(x) > self.min_delay:
+            step = self.min_delay
+            return np.concatenate([self._proc(x[i:i + step]) for i in range(0, len(x), step)])
+        return self._proc(x)
+
+    def _proc(self, x):
         n = len(x)
-        if n > self.min_delay:
-            raise ValueError("區塊太大，需 <= %d" % self.min_delay)
         acc = np.zeros(n)
         for i, d in enumerate(self.cd):
             prev = self.ch[i][:n]

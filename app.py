@@ -599,7 +599,9 @@ class App:
             self.status.config(text="耳機聽自己的延遲：約 %.0f ms\n直播裡的伴奏已自動對齊人聲\n爆音次數：%d%s"
                                % (e.latency_ms, e.underruns, bmsg))
             self.auto_protect()
-            if e.in_clip > 0.5:
+            if getattr(e, "last_error", None):
+                self.msg.config(text="⚠ 處理出錯，聲音沒有送出去！請截圖給 Claude：" + str(e.last_error)[:80], fg="#ff8a8a")
+            elif e.in_clip > 0.5:
                 self.msg.config(text="⚠ 麥克風進來就太大聲（破音）！請把聲卡上的麥克風旋鈕轉小一點，或把「麥克風」音量拉小。",
                                 fg="#ff8a8a")
             elif self.msg.cget("fg") == "#ff8a8a":
