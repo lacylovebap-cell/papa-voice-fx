@@ -29,7 +29,7 @@ for name in app.PRESETS:
           and not fx.params["phone"] and not fx.params["machine"] and fx.params["card"] is True)
 
 a.preset("electro")
-check("電音歌：電音質感開啟", fx.params["electro_fx"] > 0.5 and fx.params["mode"] == "chrom")
+check("電音：電音質感開啟", fx.params["electro_fx"] > 0.5 and fx.params["mode"] == "electro")
 a.preset("phone")
 check("換成電話音：電音質感關掉", fx.params["electro_fx"] == 0)
 check("切換到另一個效果：前一個被取代", a.active_preset == "phone" and fx.params["mode"] == "off" and fx.params["phone"])
@@ -55,17 +55,18 @@ check("伴奏開關：再按一次切換", a.eng.bgm_on != b0)
 a.toggle_bgm()
 check("伴奏開關：恢復", a.eng.bgm_on == b0)
 check("伴奏來源清單可讀取", isinstance(list(a.cb_bgm["values"]), list))
-# 電音：選調與軟硬
+# 電音與自然修音：自動判斷調，不用選調
 a.preset("electro")
-a.el_key.set("A"); a.el_hard.set(100); a.apply()
-check("電音選 A 調：用音階吸附、調=A", fx.params["mode"] == "scale" and fx.params["key"] == 9)
+check("電音：自動跟調模式", fx.params["mode"] == "electro")
+a.el_hard.set(100); a.apply()
 check("電音最硬：修正速度 0", abs(fx.params["speed"]) < 1e-9)
 a.el_hard.set(0); a.apply()
 check("電音最軟：修正速度變慢", fx.params["speed"] > 0.2)
-a.el_key.set("自動"); a.apply()
-check("電音自動：吸附最近半音", fx.params["mode"] == "chrom")
 a.preset("electro")
 check("再按電音：關掉", fx.params["mode"] == "off")
+a.preset("sing")
+check("自然修音：自動跟調、保留顫音模式", fx.params["mode"] == "natural")
+a.preset("sing")
 # 跳動波形
 a.eng.running = True
 a.eng.lv.update(inp=0.5, mon=0.3, out=0.4, bgm=0.2)

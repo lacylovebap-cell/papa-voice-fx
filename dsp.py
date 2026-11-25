@@ -14,6 +14,34 @@ SCALES = {
     "blues": [0, 3, 5, 6, 7, 10],
 }
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+KEY_NAMES = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+# Krumhansl 大調輪廓：用來從唱過的音判斷是什麼調
+_MAJ = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+
+
+class KeyTracker:
+    """邊唱邊判斷調：統計最近唱過的音（越久以前權重越小），挑最符合的大調。"""
+
+    def __init__(self, half_life=20.0):
+        self.h = np.zeros(12)
+        self.half_life = half_life
+        self.key = None
+        self.sung = 0.0
+
+    def add(self, midi, dt):
+        self.h *= 0.5 ** (dt / self.half_life)
+        self.h[int(round(midi)) % 12] += dt
+        self.sung += dt
+
+    def update(self):
+        if self.sung < 2.0 or self.h.sum() <= 0:
+            return self.key
+        x = self.h / self.h.sum()
+        sc = np.array([np.corrcoef(x, np.roll(_MAJ, k))[0, 1] for k in range(12)])
+        best = int(np.argmax(sc))
+        if self.key is None or sc[best] > sc[self.key] + 0.05:   # 有明顯更好才換調，避免亂跳
+            self.key = best
+        return self.key
 
 
 def note_name(m):
@@ -110,6 +138,10 @@ class Tuner:
         self.voiced = False
         self.unv = 99
         self.allowed = [True] * 12
+        self.keyt = KeyTracker()
+        self.dsm = 0.0          # 平滑後的音高（自然修音用）
+        self.held = None
+        self.kcount = 0
         self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0)
         self.update(**{})
 
@@ -128,8 +160,28 @@ class Tuner:
         for i in iv:
             self.allowed[(i + int(self.p["key"])) % 12] = True
 
+    def sticky(self, t, x):
+        """黏住目前的音：聲音沒有明顯離開（< 0.7 半音）就不換音，避免在兩個音之間抖。"""
+        h = self.held
+        if h is not None and abs(x - h) < 0.7 and t != h:
+            return h
+        self.held = t
+        return t
+
     def quantize(self, det):
         m = self.p["mode"]
+        if m in ("natural", "electro"):
+            k = self.keyt.key
+            if k is None:                     # 還沒判斷出調：先吸最近的半音
+                return float(round(det))
+            allowed = [False] * 12
+            for i in SCALES["major"]:
+                allowed[(i + k) % 12] = True
+            c0 = int(round(det)); best, bd = c0, 1e9
+            for c in range(c0 - 6, c0 + 7):
+                if allowed[c % 12] and abs(c - det) < bd:
+                    bd, best = abs(c - det), c
+            return float(best)
         if m == "chrom":
             return float(round(det))
         if m == "robot":
@@ -193,21 +245,36 @@ class Tuner:
             self.raw_prev = raw
             self.unv = 0
             self.det = pred
+            dt = n / self.sr
+            self.keyt.add(raw, dt)
+            self.kcount += 1
+            if self.kcount % 40 == 0:
+                self.keyt.update()
+            # 平滑音高：只追「音的中心」，不追顫音與滑音
+            a = 1 - math.exp(-dt / 0.08)
+            self.dsm = raw if abs(raw - self.dsm) > 1.0 else self.dsm + (raw - self.dsm) * a
             cs = p["card_shift"]
             # 聲卡變音鎖定時：先升調再吸附，確保疊加後音準仍正確
             if p["mode"] == "robot":
                 self.target = self.quantize(self.det) + cs
+            elif p["mode"] == "natural":
+                self.target = self.sticky(self.quantize(self.dsm + cs), self.dsm + cs)
             else:
-                self.target = self.quantize(self.det + cs) if active else self.det + cs
+                self.target = self.sticky(self.quantize(self.det + cs), self.det + cs) if active else self.det + cs
             self.voiced = True
         else:
             self.unv += 1
             if self.unv > 3:
                 self.voiced = False
+                self.held = None
 
         if active and self.voiced:
             cs = p["card_shift"]
-            want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
+            if p["mode"] == "natural":
+                # 自然修音：只把「音的中心」拉到準的音上，顫音和滑音原樣保留（不會有機械感）
+                want = cs + (self.target - (self.dsm + cs)) * p["strength"] + p["shift"]
+            else:
+                want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
             tau = p["speed"] * 0.4
             alpha = 1 - math.exp(-n / (self.sr * tau)) if tau > 0.0005 else 1.0
         else:

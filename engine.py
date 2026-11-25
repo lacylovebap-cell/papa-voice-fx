@@ -189,6 +189,7 @@ class Engine:
         self.backing = None
         self.bgm_ring = None
         self.bgm_fifo = np.zeros(0)
+        self.backing_error = None
         self.bgm_on = True
         self.out_target = 512          # 輸出緩衝目標（樣本）
         self.bgm_comp = 0              # 伴奏延後量（樣本），讓直播裡伴奏和人聲對齊

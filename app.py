@@ -10,23 +10,21 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import engine
-from dsp import note_name
+from dsp import note_name, KEY_NAMES
 
 APP = "PaPaVoiceFx"
 NONE = "（不使用）"
 
 # 效果：再按一次同一顆＝關閉。聲卡變音是獨立的鎖，不受效果影響。
 NEUTRAL = dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
-PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 唱歌", "electro": "⚡ 電音", "phone": "📞 電話", "machine": "📼 答錄機"}
+PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 自然修音", "electro": "⚡ 電音", "phone": "📞 電話", "machine": "📼 答錄機"}
 PRESETS = {
     "talk": dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, eq_lo=0, eq_mid=2, eq_hi=2),
-    "sing": dict(electro_fx=0, mode="scale", phone=0, machine=0, strength=55, speed=12, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=3),
-    "electro": dict(electro_fx=60, mode="scale", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
+    "sing": dict(electro_fx=0, mode="natural", phone=0, machine=0, strength=85, speed=10, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=2),
+    "electro": dict(electro_fx=60, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
     "phone": dict(electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
     "machine": dict(electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
 }
-# 電音的調（「自動」＝不用選調，吸到最近的半音）
-EL_KEYS = ["自動", "C", "C#/Db", "D", "Eb", "E", "F", "F#/Gb", "G", "Ab", "A", "Bb", "B"]
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
 
@@ -158,9 +156,6 @@ class App:
         self.bgm_trim = self.var("bgm_trim", 0, D)
         self.verb = self.var("verb", 0, D)
         self.g_dry = self.var("g_dry", 0, D)
-        self.el_key = self.var("el_key", "自動")
-        if self.el_key.get() not in EL_KEYS:
-            self.el_key.set("自動")
         self.el_hard = self.var("el_hard", 60, D)
         # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
         for k, v in NEUTRAL.items():
@@ -221,14 +216,12 @@ class App:
             self.preset_btns[key] = b
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
-        self.label(el, "電音的調：", 10).pack(side="left")
-        cbk = ttk.Combobox(el, textvariable=self.el_key, values=EL_KEYS, state="readonly", width=7)
-        cbk.pack(side="left")
-        cbk.bind("<<ComboboxSelected>>", lambda e: self.apply())
-        self.label(el, "　　電音　軟", 10).pack(side="left")
+        self.label(el, "電音　軟", 10).pack(side="left")
         ttk.Scale(el, from_=0, to=100, variable=self.el_hard, orient="horizontal", length=160,
                   command=lambda v: self.apply()).pack(side="left", padx=4)
         self.label(el, "硬", 10).pack(side="left")
+        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝一格一格跳的電音人聲。",
+                   9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
         self.note_label = self.label(fx, "", 10, C_SUB, anchor="w")
         self.note_label.pack(fill="x", pady=(6, 0))
 
@@ -377,12 +370,9 @@ class App:
         strength = float(self.strength.get()) / 100
         speed = float(self.speed.get()) / 100
         if self.active_preset == "electro":
-            # 電音：依選的調吸附（自動＝最近的半音），軟硬由滑桿決定
-            mode = "chrom" if self.el_key.get() == "自動" else "scale"
-            strength, speed = 1.0, hard_to_speed(self.el_hard.get())
-        key = max(0, EL_KEYS.index(self.el_key.get()) - 1) if self.el_key.get() in EL_KEYS else 0
+            strength, speed = 1.0, hard_to_speed(self.el_hard.get())   # 軟硬由滑桿決定
         kw = dict(
-            mode=mode, key=key, scale="major", strength=strength, speed=speed,
+            mode=mode, key=0, scale="major", strength=strength, speed=speed,
             shift=float(self.shift.get()), robot=57,
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
             eq_lo=float(self.eq_lo.get()), eq_mid=float(self.eq_mid.get()), eq_hi=float(self.eq_hi.get()),
@@ -516,7 +506,9 @@ class App:
         if run:
             f, det, tgt = e.info
             if det is not None:
-                self.note_label.config(text="你唱的音：" + note_name(det) + ("  →  修成：" + note_name(tgt) if tgt is not None else ""))
+                k = e.fx.tuner.keyt.key if e.fx is not None else None
+                ks = ("　｜　聽起來是 %s 大調" % KEY_NAMES[k]) if (k is not None and self.mode.get() in ("natural", "electro")) else ""
+                self.note_label.config(text="你唱的音：" + note_name(det) + ("  →  修成：" + note_name(tgt) if tgt is not None else "") + ks)
             else:
                 self.note_label.config(text="")
             bk = e.backing

@@ -2,7 +2,7 @@
 import sys
 import time
 import numpy as np
-from dsp import VoiceFx, Tuner, note_name
+from dsp import VoiceFx, Tuner, note_name, KEY_NAMES
 
 SR = 48000
 BLOCK = 256
@@ -232,6 +232,41 @@ def pitch_sd(o, N=1024):
     return np.std(ps)
 sd_in, sd_out = pitch_sd(xv), pitch_sd(ov)
 check("電音把顫音壓平（< 1/3）", sd_out < sd_in / 3, f"{sd_in:.0f} → {sd_out:.1f} cents")
+
+# ---------- 自動判斷調（不用自己選調）
+def tune(notes, dur=0.4, cents=0.0, vib=0.0, seconds=None):
+    seq = []
+    for nn in notes:
+        k = int(SR * dur); tt = np.arange(k) / SR
+        f = hz(nn) * 2 ** ((cents / 100 + vib * np.sin(2 * np.pi * 5.5 * tt)) / 12)
+        seq.append(f)
+    f = np.concatenate(seq); ph = 2 * np.pi * np.cumsum(f) / SR
+    return (0.3 * np.sin(ph) + 0.15 * np.sin(2 * ph)).astype(np.float32)
+amaj = [57, 59, 61, 62, 64, 66, 68, 69, 64, 61, 57, 62, 66, 69, 68, 64] * 2   # A 大調旋律
+xa = tune(amaj)
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="electro", strength=1.0, speed=0.0)
+for s0 in range(0, len(xa) // 256 * 256, 256):
+    fx.process(xa[s0:s0 + 256])
+k = fx.tuner.keyt.key
+check("邊唱邊判斷調：A 大調旋律 → A", k == 9, "判斷為 %s" % (KEY_NAMES[k] if k is not None else "未知"))
+
+# ---------- 自然修音：保留顫音，只把音的中心拉準
+def pitch_track(o, N=1024):
+    ps = []
+    for s0 in range(SR // 2, len(o) - N, 240):
+        seg = o[s0:s0 + N].astype(float); ac = np.correlate(seg, seg, "full")[N - 1:]
+        lo, hi = SR // 600, SR // 120; kk = lo + np.argmax(ac[lo:hi]); a, b, c = ac[kk - 1], ac[kk], ac[kk + 1]
+        ps.append(1200 * np.log2(SR / (kk + (a - c) / (2 * (a - 2 * b + c))) / 440) + 6900)
+    return np.array(ps)
+xs = tune([57] * 8, dur=0.5, cents=35, vib=0.25)      # 偏高 35 cents 且有顫音的長音
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="natural", strength=1.0, speed=0.1)
+on = np.concatenate([fx.process(xs[s0:s0 + 256]) for s0 in range(0, len(xs) // 256 * 256, 256)])
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="electro", strength=1.0, speed=0.0)
+oe = np.concatenate([fx.process(xs[s0:s0 + 256]) for s0 in range(0, len(xs) // 256 * 256, 256)])
+pi, pn, pe = pitch_track(xs), pitch_track(on), pitch_track(oe)
+check("自然修音：音的中心被拉準", abs(np.median(pn) - 5700) < 12, "中心偏 %+.0f cents（原本 +35）" % (np.median(pn) - 5700))
+check("自然修音：顫音保留（不會有機械感）", np.std(pn) > 0.7 * np.std(pi), "原 %.0f → %.0f cents" % (np.std(pi), np.std(pn)))
+check("電音：顫音被壓平（電音感）", np.std(pe) < 0.5 * np.std(pi), "原 %.0f → %.0f cents" % (np.std(pi), np.std(pe)))
 
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)
