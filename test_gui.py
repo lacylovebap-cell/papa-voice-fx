@@ -62,13 +62,11 @@ a.el_style.set("說唱（最電）"); a.apply()
 s_hard = fx.params["speed"]
 a.el_style.set("流行網感（微微電音）"); a.apply()
 check("電音風格：說唱比流行網感更硬", s_hard < fx.params["speed"] and fx.params["humanize"] > 0.5)
-a.color.set("少女甜嗓"); a.apply()
-check("聲線：少女甜嗓", fx.params["color"] == "少女甜嗓")
-a.color.set("原本"); a.apply()
+check("電音已包含人聲修飾音色（不用另外選）", fx.params["color"] == "人聲修飾")
 a.preset("electro")
 check("再按電音：關掉", fx.params["mode"] == "off")
 a.preset("sing")
-check("自然修音：自動跟調、保留顫音模式", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0)
+check("自然修音：自動跟調、保留顫音模式，含人聲修飾", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0 and fx.params["color"] == "人聲修飾")
 a.preset("sing")
 # 跳動波形
 a.eng.running = True

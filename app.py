@@ -167,9 +167,7 @@ class App:
         self.el_style = self.var("el_style", "流行網感（微微電音）")
         if self.el_style.get() not in EL_STYLES:
             self.el_style.set("流行網感（微微電音）")
-        self.color = self.var("color", "原本")
-        if self.color.get() not in VOICE_COLORS:
-            self.color.set("原本")
+        self.color = tk.StringVar(value="原本")   # 音色跟著效果走（不另外選）
         # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
         for k, v in NEUTRAL.items():
             setattr(self, k, self.var(k, v, tk.StringVar if k == "mode" else D, remember=False))
@@ -237,11 +235,8 @@ class App:
         c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="readonly", width=18)
         c1.pack(side="left")
         c1.bind("<<ComboboxSelected>>", lambda e: self.apply())
-        self.label(el, "　聲線：", 10).pack(side="left")
-        c2 = ttk.Combobox(el, textvariable=self.color, values=list(VOICE_COLORS), state="readonly", width=9)
-        c2.pack(side="left")
-        c2.bind("<<ComboboxSelected>>", lambda e: self.apply())
-        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n聲線＝整體音色（少女甜嗓、御姐煙嗓…），任何效果都適用。",
+
+        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n兩個都已經包含人聲修飾的音色，不用另外調。",
                    9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
         self.note_label = self.label(fx, "", 10, C_SUB, anchor="w")
         self.note_label.pack(fill="x", pady=(6, 0))
@@ -403,7 +398,8 @@ class App:
         elif self.active_preset == "sing":
             ms, fl, hu = NATURAL
             strength, speed, flex, humanize = 1.0, ms / 400, fl / 100, hu / 100
-        kw = dict(flex=flex, humanize=humanize, color=self.color.get(),
+        color = "人聲修飾" if self.active_preset in ("sing", "electro") else "原本"
+        kw = dict(flex=flex, humanize=humanize, color=color,
             mode=mode, key=0, scale="major", strength=strength, speed=speed,
             shift=float(self.shift.get()), robot=57,
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
@@ -469,7 +465,7 @@ class App:
         extra = ""
         if self.active_preset == "electro":
             extra = "（%s）" % self.el_style.get()
-        col = "" if self.color.get() == "原本" else "＋聲線「%s」" % self.color.get()
+        col = ""
         self.now_label.config(text="現在送出去的聲音 ＝ %s ＋ %s%s%s" % (voice, fxname, extra, col))
         for k, btn in self.preset_btns.items():
             c = C_GREEN if self.active_preset == k else C_BTN
@@ -566,6 +562,11 @@ class App:
             self.status.config(text="耳機聽自己的延遲：約 %.0f ms\n直播裡的伴奏已自動對齊人聲\n爆音次數：%d%s"
                                % (e.latency_ms, e.underruns, bmsg))
             self.auto_protect()
+            if e.in_clip > 0.5:
+                self.msg.config(text="⚠ 麥克風進來就太大聲（破音）！請把聲卡上的麥克風旋鈕轉小一點，或把「麥克風」音量拉小。",
+                                fg="#ff8a8a")
+            elif self.msg.cget("fg") == "#ff8a8a":
+                self.msg.config(text="運作中。", fg=C_SUB)
             if e.recording:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             if not e.playing and self._play_which is not None:

@@ -475,11 +475,45 @@ class ElectroLayer:
 # ---------------------------------------------------------------- 聲線（直播人聲調音公式）
 VOICE_COLORS = {
     "原本": [],
+    # 唱歌用的人聲修飾：參考「少女甜嗓」公式，強度減半，比較自然
+    "人聲修飾": [(200, -1.5, 1.0), (2000, 2.5, 1.8), (4000, 1.5, 0.8), (8000, -1.5, 1.0), (16000, 1.0, 0.3)],
     "少女甜嗓": [(200, -3, 1.0), (2000, 5, 1.8), (4000, 3, 0.8), (8000, -3, 1.0), (16000, 2, 0.3)],
     "御姐煙嗓": [(80, 4, 0.7), (250, 3, 1.2), (800, -2, 2.0), (3000, -3, 1.5), (12000, 2, 0.5)],
     "古風戲腔": [(80, -3, 1.2), (250, -2, 1.0), (1500, 3, 0.8), (4000, 4, 1.0), (10000, 3, 1.2)],
     "ASMR": [(300, 6, 0.5), (1200, -4, 2.0), (4000, 3, 0.8), (8000, 6, 1.5), (12000, 5, 0.3)],
 }
+
+
+# ---------------------------------------------------------------- 限制器
+class Limiter:
+    """太大聲時平滑地把音量壓下來（不像硬削波那樣把波形切平，聽起來不會破、不會吵）。"""
+
+    def __init__(self, sr, ceiling=0.89, release=0.15):
+        self.g = 1.0
+        self.ceiling = ceiling
+        self.rel = math.exp(-1.0 / (release * sr))
+        self.reduced = 0.0    # 最近一次壓了多少 dB（給畫面顯示）
+
+    def process(self, x):
+        n = len(x)
+        if n == 0:
+            return x
+        peak = float(np.max(np.abs(x)))
+        want = min(1.0, self.ceiling / peak) if peak > 1e-9 else 1.0
+        if want < self.g:
+            g_end = want                                   # 變大聲：立刻壓
+        else:
+            g_end = want + (self.g - want) * self.rel ** n   # 變小聲：慢慢放開
+        ramp = np.linspace(self.g, g_end, n, endpoint=False) if g_end > self.g else np.full(n, g_end)
+        self.g = g_end
+        self.reduced = -20 * math.log10(max(g_end, 1e-6))
+        y = x * ramp
+        # 保險：極少數超過的樣本用柔和曲線收邊，不硬切
+        over = np.abs(y) > self.ceiling
+        if over.any():
+            c = self.ceiling
+            y[over] = np.sign(y[over]) * (c + (1 - c) * np.tanh((np.abs(y[over]) - c) / (1 - c)))
+        return y
 
 
 # ---------------------------------------------------------------- 整合

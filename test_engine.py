@@ -178,6 +178,21 @@ check("直播裡伴奏延後量 = 計算值（與人聲對齊）", abs(d - 1000 
 eng.bgm_ring = None
 eng.mon_ring = engine.Ring(BLOCK * 16); eng.out_ring = engine.Ring(BLOCK * 16)
 
+# 限制器：太大聲時平滑壓下，不硬削波
+from dsp import Limiter
+lim = Limiter(SR)
+tl = np.arange(SR) / SR
+loud = 1.6 * np.sin(2 * np.pi * 300 * tl)
+ol = np.concatenate([lim.process(loud[s:s + 256]) for s in range(0, SR, 256)])
+seg = ol[SR // 2:]
+sp = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))); fr = np.fft.rfftfreq(len(seg), 1 / SR)
+h1 = sp[np.abs(fr - 300) < 5].max(); h3 = sp[np.abs(fr - 900) < 5].max()
+check("限制器：音量壓在 1 以下", np.max(np.abs(ol)) <= 0.9)
+check("限制器：不會破音（3 次諧波 < -40 dB）", 20 * np.log10(h3 / h1) < -40, "%.0f dB" % (20 * np.log10(h3 / h1)))
+hc = np.clip(loud, -1, 1)[SR // 2:]
+sp2 = np.abs(np.fft.rfft(hc * np.hanning(len(hc))))
+print("INFO  對照：硬削波的 3 次諧波 %.0f dB" % (20 * np.log10(sp2[np.abs(fr - 900) < 5].max() / sp2[np.abs(fr - 300) < 5].max())))
+
 # 增益
 eng.set_gain("mon", 1.0)
 eng.set_gain("mon", 0.0)

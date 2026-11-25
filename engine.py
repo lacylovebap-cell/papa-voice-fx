@@ -15,7 +15,7 @@ except Exception as e:  # 讓 GUI 能顯示錯誤，而不是直接閃退
 else:
     SD_ERROR = None
 
-from dsp import VoiceFx
+from dsp import VoiceFx, Limiter
 
 try:
     import soundcard as sc   # 用來擷取「別的程式正在播的聲音」（WASAPI loopback）
@@ -275,7 +275,11 @@ class Engine:
         try:
             x = indata[:, 0].astype(np.float64) * self.gains["inp"]
             dry = x.astype(np.float32)
-            self.lv["inp"] = float(np.max(np.abs(x))) if len(x) else 0.0
+            self.lv["inp"] = float(np.max(np.abs(indata[:, 0]))) if len(x) else 0.0
+            if self.lv["inp"] > 0.97:          # 聲卡進來就已經太大聲（破音）
+                self.in_clip = 1.0
+            else:
+                self.in_clip *= 0.995
             y = self.fx.process(x)
             self.info = self.fx.info
             self.level = float(np.max(np.abs(y))) if len(y) else 0.0
@@ -297,8 +301,9 @@ class Engine:
                 self.lv["bgm"] = float(np.max(np.abs(bg))) if len(bg) else 0.0
             else:
                 bg_mix = bg_mon = 0.0
+            out_mix = self.lim_out.process(y * self.gains["out"] + bg_mix)
             if self.recording and self.rec_samples < self.rec_max:
-                self.rec_wet.append(np.clip(y * self.gains["out"] + bg_mix, -1, 1).astype(np.float32))
+                self.rec_wet.append(out_mix.astype(np.float32))
                 self.rec_dry.append(dry.copy())
                 self.rec_samples += len(y)
             pd = self.play_data
@@ -311,11 +316,11 @@ class Engine:
                 if self.play_pos >= len(pd):
                     self.play_data = None
             else:
-                mon = (y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
+                mon = self.lim_mon.process((y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"]))
             self.lv["mon"] = float(np.max(np.abs(mon))) if len(mon) else 0.0
             self.mon_ring.write(np.clip(mon, -1.0, 1.0).astype(np.float32))
             if self.out_ring is not None:
-                o_ = np.clip(y * self.gains["out"] + bg_mix, -1, 1)
+                o_ = out_mix
                 self.lv["out"] = float(np.max(np.abs(o_))) if len(o_) else 0.0
                 self.out_ring.write(o_.astype(np.float32))
         except Exception as e:  # 回呼內不可丟例外，否則串流會停
@@ -338,6 +343,10 @@ class Engine:
         self.last_error = None
         self.out_target = (self.block + 64) if ultra else self.block * 2
         self.fx = VoiceFx(SR, low_latency or ultra)
+        self.status_msgs = 0
+        self.lim_out = Limiter(SR)
+        self.lim_mon = Limiter(SR)
+        self.in_clip = 0.0
         self.fx.set(**self.params)
         cap = self.block * 16
         self.mon_ring = Ring(cap)
@@ -417,7 +426,8 @@ class Engine:
 
     @property
     def underruns(self):
-        n = 0
+        n = self.status_msgs          # 輸入端來不及（overflow）也算
+        n = n if isinstance(n, int) else 0
         for r in (self.mon_ring, self.out_ring):
             if r is not None:
                 n += r.underruns
