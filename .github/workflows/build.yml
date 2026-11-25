@@ -26,14 +26,14 @@ jobs:
       - name: 打包 exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx
-          --collect-all sounddevice
+          --collect-all sounddevice --collect-all soundcard
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
           --exclude-module matplotlib --exclude-module pandas --exclude-module PIL --exclude-module IPython
           app.py
       - name: 確認 exe 能載入套件
         shell: pwsh
         run: |
-          python -c "import sounddevice, numpy, scipy.signal, pynput.keyboard, tkinter; print('imports ok', sounddevice.get_portaudio_version())"
+          python -c "import sounddevice, soundcard, numpy, scipy.signal, pynput.keyboard, tkinter; print('loopback:', [m.name for m in soundcard.all_microphones(include_loopback=True)]); print('imports ok', sounddevice.get_portaudio_version())"
           Get-Item dist/PaPaVoiceFx.exe | Select-Object Name, Length
       - uses: actions/upload-artifact@v4
         with:

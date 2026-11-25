@@ -9,7 +9,7 @@ call venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt pyinstaller || goto :err
 pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx ^
-  --collect-all sounddevice ^
+  --collect-all sounddevice --collect-all soundcard ^
   --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 ^
   --exclude-module matplotlib --exclude-module pandas --exclude-module PIL --exclude-module IPython ^
   app.py || goto :err
