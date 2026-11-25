@@ -22,6 +22,7 @@ jobs:
         run: |
           python test_dsp.py
           python test_engine.py
+          python test_gui.py
       - name: 打包 exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx

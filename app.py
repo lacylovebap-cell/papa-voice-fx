@@ -18,13 +18,14 @@ ROBOT_MAP = {"A2": 45, "E3": 52, "A3": 57, "C4": 60, "E4": 64, "A4": 69}
 MODES = [("關", "off"), ("音階吸附", "scale"), ("自動半音", "chrom"), ("機器人", "robot")]
 KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+NEUTRAL = dict(mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, verb=0, eq_lo=0, eq_mid=0, eq_hi=0)
+PRESET_NAMES = {"talk": "說話", "sing": "唱歌(輕修音)", "electro": "電音歌", "phone": "電話音", "machine": "答錄機音"}
 PRESETS = {
-    "card": dict(mode="off", phone=0, machine=0, card=1, strength=100, speed=0, shift=1.5, comp=0, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
-    "talk": dict(mode="off", phone=0, machine=0, card=0, strength=100, speed=0, shift=0, comp=45, verb=5, eq_lo=0, eq_mid=2, eq_hi=2),
-    "sing": dict(mode="scale", phone=0, machine=0, card=0, strength=55, speed=12, shift=0, comp=40, verb=28, eq_lo=1, eq_mid=1, eq_hi=3),
-    "electro": dict(mode="scale", phone=0, machine=0, card=0, strength=100, speed=0, shift=0, comp=50, verb=18, eq_lo=0, eq_mid=2, eq_hi=3),
-    "phone": dict(mode="off", phone=1, machine=0, card=0, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
-    "machine": dict(mode="off", phone=0, machine=1, card=0, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
+    "talk": dict(mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, verb=5, eq_lo=0, eq_mid=2, eq_hi=2),
+    "sing": dict(mode="scale", phone=0, machine=0, strength=55, speed=12, shift=0, comp=40, verb=28, eq_lo=1, eq_mid=1, eq_hi=3),
+    "electro": dict(mode="scale", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, verb=18, eq_lo=0, eq_mid=2, eq_hi=3),
+    "phone": dict(mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
+    "machine": dict(mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, verb=0, eq_lo=0, eq_mid=0, eq_hi=0),
 }
 
 
@@ -57,6 +58,7 @@ class App:
         self.eng = engine.Engine()
         self.settings = self.load_settings()
         self.in_map, self.out_map = {}, {}
+        self._play_which = None
         self._save_job = None
         self._build()
         self.refresh_devices()
@@ -102,6 +104,12 @@ class App:
         st.configure("Big.TButton", font=("Microsoft JhengHei", 12, "bold"), padding=8)
         st.configure("H.TLabel", font=("Microsoft JhengHei", 11, "bold"), foreground="#c2306f")
         st.configure("Note.TLabel", font=("Microsoft JhengHei", 24, "bold"))
+        st.configure("On.TButton", background="#7dffb0", foreground="#0b2216", font=("Microsoft JhengHei", 10, "bold"))
+        st.map("On.TButton", background=[("active", "#a8ffcc")])
+        st.configure("Lock.TButton", background="#ff7eb6", foreground="#2a0a1a", font=("Microsoft JhengHei", 13, "bold"), padding=10)
+        st.map("Lock.TButton", background=[("active", "#ff9cc7")])
+        st.configure("Unlock.TButton", background="#ffd84d", foreground="#3a2a00", font=("Microsoft JhengHei", 13, "bold"), padding=10)
+        st.map("Unlock.TButton", background=[("active", "#ffe27a")])
 
         left = ttk.Frame(self.root, padding=8)
         mid = ttk.Frame(self.root, padding=8)
@@ -133,25 +141,35 @@ class App:
         self.msg = ttk.Label(left, text="請先戴上耳機再開始。", wraplength=300, foreground="#666")
         self.msg.pack(anchor="w")
 
-        ttk.Label(left, text="② 一鍵預設", style="H.TLabel").pack(anchor="w", pady=(12, 2))
+        ttk.Label(left, text="② 聲卡變音（鎖定）", style="H.TLabel").pack(anchor="w", pady=(12, 2))
+        self.card = tk.IntVar(value=1)   # 每次開啟一律鎖定，避免直播出現原音
+        self.vars["card"] = self.card
+        self.btn_card = ttk.Button(left, command=self.toggle_card)
+        self.btn_card.pack(fill="x")
+        ttk.Label(left, text="開著時，不管按哪個效果都會疊在聲卡變音上，只有按這顆才會關。", foreground="#666", wraplength=300).pack(anchor="w")
+        ttk.Label(left, text="③ 一鍵效果（再按一次＝關閉）", style="H.TLabel").pack(anchor="w", pady=(12, 2))
         pf = ttk.Frame(left)
         pf.pack(fill="x")
-        for i, (key, txt) in enumerate([("card", "★ 聲卡變音"), ("talk", "說話"), ("sing", "唱歌(輕修音)"), ("electro", "電音歌"), ("phone", "電話音"), ("machine", "答錄機音")]):
-            ttk.Button(pf, text=txt, command=lambda k=key: self.preset(k)).grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
+        self.active_preset = None
+        self.preset_btns = {}
+        for i, (key, txt) in enumerate(PRESET_NAMES.items()):
+            b = ttk.Button(pf, text=txt, command=lambda k=key: self.preset(k))
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=2, pady=2)
+            self.preset_btns[key] = b
         pf.columnconfigure(0, weight=1)
         pf.columnconfigure(1, weight=1)
-        ttk.Label(left, text="全域快捷鍵：Ctrl+Alt+ 1說話 2唱歌 3電音 4電話 5答錄機 6聲卡變音\nE=電音開關  P=電話音開關  M=答錄機開關  R=錄音開關",
+        ttk.Label(left, text="全域快捷鍵（再按一次＝關閉）：Ctrl+Alt+ 1說話 2唱歌 3電音 4電話 5答錄機 6聲卡變音鎖定\nE=電音開關  P=電話音開關  M=答錄機開關  R=錄音開關",
                   foreground="#666", justify="left").pack(anchor="w", pady=4)
 
-        ttk.Label(left, text="③ 錄音與回放", style="H.TLabel").pack(anchor="w", pady=(10, 2))
+        ttk.Label(left, text="④ 錄音與回放", style="H.TLabel").pack(anchor="w", pady=(10, 2))
         rf = ttk.Frame(left)
         rf.pack(fill="x")
         self.btn_rec = ttk.Button(rf, text="● 錄音", command=self.toggle_rec)
-        self.btn_rec.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
-        self.btn_stopplay = ttk.Button(rf, text="■ 停止播放", command=self.eng.stop_play)
-        self.btn_stopplay.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
-        ttk.Button(rf, text="▶ 聽處理後", command=lambda: self.play("wet")).grid(row=1, column=0, sticky="ew", padx=2, pady=2)
-        ttk.Button(rf, text="▶ 聽原聲", command=lambda: self.play("dry")).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self.btn_rec.grid(row=0, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+        self.btn_play_wet = ttk.Button(rf, text="▶ 聽處理後", command=lambda: self.play("wet"))
+        self.btn_play_wet.grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        self.btn_play_dry = ttk.Button(rf, text="▶ 聽原聲", command=lambda: self.play("dry"))
+        self.btn_play_dry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
         ttk.Button(rf, text="💾 存成 WAV", command=self.save_rec).grid(row=2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
         rf.columnconfigure(0, weight=1)
         rf.columnconfigure(1, weight=1)
@@ -170,8 +188,11 @@ class App:
         self.mode = self.var("mode", "off")
         mf = ttk.Frame(mid)
         mf.pack(fill="x", pady=4)
-        for txt, val in MODES:
-            ttk.Radiobutton(mf, text=txt, value=val, variable=self.mode, command=self.apply).pack(side="left", padx=4)
+        self.mode_btns = {}
+        for txt, val in MODES[1:]:
+            b = ttk.Button(mf, text=txt, command=lambda v=val: self.set_mode(v))
+            b.pack(side="left", padx=2, expand=True, fill="x")
+            self.mode_btns[val] = b
         kf = ttk.Frame(mid)
         kf.pack(fill="x")
         self.key = self.var("key", "C")
@@ -194,11 +215,9 @@ class App:
         self.shift = self.var("shift", 0, tk.DoubleVar)
         self.slider(mid, "電音強度（100＝完全吸附）", self.strength, 0, 100, "{:.0f}%")
         self.slider(mid, "修正速度（0＝瞬間跳音最電）", self.speed, 0, 100, "{:.0f}%")
-        self.slider(mid, "整體升降調（半音，可微調到 0.1）", self.shift, -12, 12, "{:+.1f}")
+        self.slider(mid, "額外升降調（半音，疊在聲卡變音之上）", self.shift, -12, 12, "{:+.1f}")
 
         ttk.Label(mid, text="⑤ 特殊音色", style="H.TLabel").pack(anchor="w", pady=(14, 0))
-        self.card = self.var("card", 0, tk.IntVar)
-        ttk.Checkbutton(mid, text="聲卡變音音色（中低頻 -6dB、3.2kHz 凹陷；搭配升調 +1.5）", variable=self.card, command=self.apply).pack(anchor="w")
         self.phone = self.var("phone", 0, tk.IntVar)
         self.machine = self.var("machine", 0, tk.IntVar)
         self.phone_dist = self.var("phone_dist", 25, tk.DoubleVar)
@@ -307,6 +326,8 @@ class App:
 
     # ------------------------------------------------------------ 參數
     def apply(self):
+        if hasattr(self, "btn_card"):
+            self.refresh_buttons()
         for v in self.vars.values():
             fm = getattr(v, "_fmt", None)
             if fm:
@@ -328,10 +349,37 @@ class App:
         self.schedule_save()
 
     def preset(self, name):
-        p = PRESETS[name]
+        """一鍵效果：再按一次同一個＝關閉（回到乾淨狀態，聲卡變音不受影響）。"""
+        p = NEUTRAL if self.active_preset == name else PRESETS[name]
         for k, v in p.items():
             getattr(self, k).set(v)
+        self.active_preset = None if p is NEUTRAL else name
         self.apply()
+
+    def set_mode(self, val):
+        self.mode.set("off" if self.mode.get() == val else val)
+        self.active_preset = None
+        self.apply()
+
+    def toggle_card(self):
+        if self.card.get():
+            if not messagebox.askyesno("關閉聲卡變音", "關閉後直播會出現你的原音。\n確定要關閉嗎？"):
+                return
+            self.card.set(0)
+        else:
+            self.card.set(1)
+        self.apply()
+
+    def refresh_buttons(self):
+        on = bool(self.card.get())
+        self.btn_card.config(text=("🔒 聲卡變音：鎖定中（按這裡關閉）" if on else "⚠ 聲卡變音已關閉＝原音！（按這裡打開）"),
+                             style="Lock.TButton" if on else "Unlock.TButton")
+        for k, b in self.preset_btns.items():
+            b.config(style="On.TButton" if self.active_preset == k else "TButton")
+        for v, b in self.mode_btns.items():
+            b.config(style="On.TButton" if self.mode.get() == v else "TButton")
+        self.btn_play_wet.config(text="■ 停止播放" if self.eng.playing and self._play_which == "wet" else "▶ 聽處理後")
+        self.btn_play_dry.config(text="■ 停止播放" if self.eng.playing and self._play_which == "dry" else "▶ 聽原聲")
 
     # ------------------------------------------------------------ 錄音
     def toggle_rec(self):
@@ -347,6 +395,11 @@ class App:
             self.btn_rec.config(text="■ 停止錄音")
 
     def play(self, which):
+        if self.eng.playing and self._play_which == which:
+            self.eng.stop_play()
+            self.refresh_buttons()
+            return
+        self._play_which = which
         if self.eng.recording:
             self.toggle_rec()
         if not self.eng.has_recording():
@@ -396,12 +449,13 @@ class App:
             else:
                 self._last_mode = self.mode.get()
                 self.mode.set("off")
+            self.active_preset = None
             self.apply()
 
         hk = {
             "<ctrl>+<alt>+1": ui(self.preset, "talk"), "<ctrl>+<alt>+2": ui(self.preset, "sing"),
             "<ctrl>+<alt>+3": ui(self.preset, "electro"), "<ctrl>+<alt>+4": ui(self.preset, "phone"),
-            "<ctrl>+<alt>+5": ui(self.preset, "machine"), "<ctrl>+<alt>+6": ui(self.preset, "card"),
+            "<ctrl>+<alt>+5": ui(self.preset, "machine"), "<ctrl>+<alt>+6": ui(self.toggle_card),
             "<ctrl>+<alt>+e": ui(electro), "<ctrl>+<alt>+p": ui(toggler(self.phone)),
             "<ctrl>+<alt>+m": ui(toggler(self.machine)), "<ctrl>+<alt>+r": ui(self.toggle_rec),
         }
@@ -429,6 +483,9 @@ class App:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             elif e.playing:
                 self.rec_label.config(text="播放中…")
+            if not e.playing and self._play_which is not None:
+                self._play_which = None
+                self.refresh_buttons()
         else:
             self.meter["value"] = 0
         self.root.after(50, self.tick)

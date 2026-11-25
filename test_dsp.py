@@ -126,15 +126,29 @@ check("答錄機音：不失真（3 次諧波 < -50dB）", 10 * np.log10(h3 / h1
 
 # ---------- 聲卡變音音色：200Hz 降約 6dB、3.2kHz 降約 5dB、1kHz 幾乎不變
 def band_gain(lo, hi, **kw):
-    x, o, _ = run(noise, seconds=1.0, **kw)
-    a, b = x[SR // 2:SR // 2 + 16384], o[SR // 2:SR // 2 + 16384]
+    # 直接量聲卡變音的 EQ 濾波器（不含變調）
+    from dsp import VoiceFx as _V
+    fx = _V(SR)
+    x = rng.standard_normal(SR).astype(np.float64) * 0.2
+    y = x.copy()
+    for f in fx.card_eq:
+        y = f(y)
+    a, b = x[SR // 4:SR // 4 + 16384], y[SR // 4:SR // 4 + 16384]
     return 10 * np.log10(band_energy(b, lo, hi) / band_energy(a, lo, hi))
 g200, g1k, g32 = band_gain(150, 260, card=True), band_gain(900, 1100, card=True), band_gain(3000, 3400, card=True)
 check("聲卡變音：中低頻約 -6dB", -8 < g200 < -4, f"{g200:.1f} dB")
 check("聲卡變音：1kHz 幾乎不變", -1.5 < g1k < 1.0, f"{g1k:.1f} dB")
 check("聲卡變音：3.2kHz 約 -5dB", -6.5 < g32 < -3, f"{g32:.1f} dB")
-_, o, _ = run(rich(220), mode="off", shift=1.5, card=True)
-near("聲卡變音：升 1.5 半音 220→239.8Hz", est_freq(o), 220 * 2 ** (1.5 / 12), 4)
+_, o, _ = run(rich(220), mode="off", card=True)
+near("聲卡變音：本身就升 1.5 半音 220→239.8Hz", est_freq(o), 220 * 2 ** (1.5 / 12), 4)
+# 鎖定：開著聲卡變音時，任何模式都不會回到原音高
+_, o, _ = run(rich(hz(57) * 1.004), mode="chrom", strength=1.0, card=True)
+f = est_freq(o)
+check("聲卡變音＋電音：音高不是原音，且吸附在半音上", abs(f - hz(57)) > 5 and abs(12 * np.log2(f / 440) - round(12 * np.log2(f / 440))) < 0.15, f"got={f:.1f}")
+for kw in (dict(phone=True), dict(machine=True), dict(mode="robot")):
+    _, o, _ = run(rich(220), card=True, **kw)
+    f = est_freq(o)
+    check("聲卡變音鎖定＋%s：仍有變調" % list(kw)[0], abs(f - 220) > 4, f"got={f:.1f}")
 
 # ---------- EQ
 x, o, _ = run(noise, eq_lo=9.0, seconds=1.0)
@@ -164,6 +178,21 @@ imp = np.zeros(SR * 2, np.float32); imp[100:356] = 0.5
 o = run_fx(fx, imp)
 e1 = np.sqrt(np.mean(o[SR // 4:SR // 2] ** 2)); e2 = np.sqrt(np.mean(o[int(SR * 1.5):] ** 2))
 check("混響有尾巴且逐漸衰減", e1 > 1e-4 and e2 < e1, f"0.25~0.5s={e1:.4f} 1.5s後={e2:.5f}")
+
+# ---------- 變調乾淨度：穩定音升 1.5 半音後，諧波以外的成分要很少
+def hn(o, f):
+    seg = o[SR:SR + 65536].astype(float) * np.blackman(65536)
+    sp = np.abs(np.fft.rfft(seg)) ** 2; fr = np.fft.rfftfreq(65536, 1 / SR)
+    m = np.zeros_like(fr, bool)
+    for k in range(1, int(8000 / f)):
+        m |= np.abs(fr - k * f) < 3
+    bb = (fr > 80) & (fr < 8000)
+    return 10 * np.log10(sp[bb & m].sum() / sp[bb & ~m].sum())
+vals = []
+for f0 in (150, 220, 330, 520):
+    _, o, _ = run(rich(f0), seconds=2.5, card=True)
+    vals.append(hn(o, f0 * 2 ** (1.5 / 12)))
+check("變調乾淨度（諧波/雜訊 > 35 dB）", min(vals) > 35, " ".join("%.0f" % v for v in vals))
 
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)

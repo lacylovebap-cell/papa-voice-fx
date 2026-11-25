@@ -106,11 +106,15 @@ class Tuner:
         self.voiced = False
         self.unv = 99
         self.allowed = [True] * 12
-        self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57)
+        self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0)
         self.update(**{})
 
     def set_window(self, ms):
         self.W = int(self.sr * ms / 1000)
+        self.Wbase = float(self.W)
+        self.Wtarget = float(self.W)
+        self.tW = [float(self.W), float(self.W)]
+        self.tph = [0.0, 0.5]
 
     def update(self, **kw):
         self.p.update(kw)
@@ -177,7 +181,12 @@ class Tuner:
         if f > 0:
             self.unv = 0
             self.det = 69 + 12 * math.log2(f / 440.0)
-            self.target = self.quantize(self.det) if active else self.det
+            cs = p["card_shift"]
+            # 聲卡變音鎖定時：先升調再吸附，確保疊加後音準仍正確
+            if p["mode"] == "robot":
+                self.target = self.quantize(self.det) + cs
+            else:
+                self.target = self.quantize(self.det + cs) if active else self.det + cs
             self.voiced = True
         else:
             self.unv += 1
@@ -185,17 +194,18 @@ class Tuner:
                 self.voiced = False
 
         if active and self.voiced:
-            want = (self.target - self.det) * p["strength"] + p["shift"]
+            cs = p["card_shift"]
+            want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
             tau = p["speed"] * 0.4
             alpha = 1 - math.exp(-n / (self.sr * tau)) if tau > 0.0005 else 1.0
         else:
-            want = p["shift"]
+            want = p["shift"] + p["card_shift"]
             alpha = 0.15
         if self.voiced and self.unv > 0:
             want = self.cur
         self.cur += (want - self.cur) * alpha
 
-        wet_t = 1.0 if (active or abs(p["shift"]) > 0.001) else 0.0
+        wet_t = 1.0 if (active or abs(p["shift"] + p["card_shift"]) > 0.001) else 0.0
         k = np.arange(1, n + 1)
         wet = wet_t + (self.wet - wet_t) * (0.997 ** k)
         self.wet = float(wet[-1])
@@ -203,22 +213,61 @@ class Tuner:
             self.hist = np.concatenate((self.hist, x))[-self.L:]
             return x
 
+        # 依偵測到的音高，把視窗長度對齊成整數個週期（降低變調的粗糙感）
+        if self.voiced and self.f > 0:
+            per = self.sr / self.f
+            # 兩個取樣點相差 W/2，所以 W/2 要是整數個週期，交叉淡化時才會同相位
+            k = max(1, int(round(self.Wbase / (2 * per))))
+            self.Wtarget = min(max(2 * k * per, self.Wbase * 0.5), self.Wbase * 2.0)
+        else:
+            self.Wtarget = self.Wbase
         r = 2 ** (self.cur / 12)
-        inc = (1 - r) / self.W
-        ph = (self.phase + inc * np.arange(n)) % 1.0
-        ph2 = (ph + 0.5) % 1.0
-        g1 = 0.5 - 0.5 * np.cos(2 * np.pi * ph)
-        g2 = 1 - g1
         ext = np.concatenate((self.hist, x))
         idx = self.L + np.arange(n)
-        s = 0.0
-        for g, phx in ((g1, ph), (g2, ph2)):
-            pos = idx - (phx * self.W + 2)
-            i0 = np.floor(pos).astype(np.int64)
-            fr = pos - i0
-            s = s + g * (ext[i0] * (1 - fr) + ext[i0 + 1] * fr)
-        self.phase = float((self.phase + inc * n) % 1.0)
+        ar = np.arange(n)
+        PH, WA = [], []
+        for tap in (0, 1):
+            Wt = self.tW[tap]
+            ph = self.tph[tap] + (1 - r) / Wt * ar
+            PH.append(ph)
+            WA.append(np.full(n, Wt))
+        for tap in (0, 1):
+            ph = PH[tap]
+            wrap = np.nonzero((ph >= 1) | (ph < 0))[0]
+            if not len(wrap):
+                continue
+            w0 = wrap[0]
+            o = 1 - tap
+            Wn = self.Wtarget
+            od = (PH[o][w0] % 1.0) * WA[o][w0]          # 另一個取樣點此刻的延遲
+            if r >= 1:   # 升調：延遲遞減，換相時跳到最大延遲
+                nd = od + Wn / 2
+                p0 = min(max(nd / Wn, 0.9), 0.9999)
+            else:        # 降調：延遲遞增，換相時跳到最小延遲
+                nd = od - Wn / 2
+                p0 = min(max(nd / Wn, 0.0), 0.1)
+            ph[w0:] = p0 + (1 - r) / Wn * np.arange(n - w0)
+            WA[tap][w0:] = Wn
+            self.tW[tap] = Wn
+        s = np.zeros(n)
+        gsum = np.zeros(n)
+        for tap in (0, 1):
+            ph = PH[tap] % 1.0
+            g = 0.5 - 0.5 * np.cos(2 * np.pi * ph)
+            pos = idx - (ph * WA[tap] + 3)
+            i1 = np.floor(pos).astype(np.int64)
+            t = pos - i1
+            y0, y1, y2, y3 = ext[i1 - 1], ext[i1], ext[i1 + 1], ext[i1 + 2]
+            # 4 點 Hermite 內插（比線性內插乾淨）
+            c1 = 0.5 * (y2 - y0)
+            c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
+            c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
+            s += g * (((c3 * t + c2) * t + c1) * t + y1)
+            gsum += g
+            self.tph[tap] = float((PH[tap][-1] + (1 - r) / WA[tap][-1]) % 1.0)
         self.hist = ext[-self.L:]
+        # 兩個取樣點長度不同時增益和不為 1，正規化避免音量起伏（會聽起來像雜訊）
+        s = s / np.maximum(gsum, 0.25)
         return x * (1 - wet) + s * wet
 
 
@@ -282,6 +331,8 @@ class Reverb:
 
 # ---------------------------------------------------------------- 整合
 class VoiceFx:
+    CARD_SHIFT = 1.5  # 聲卡變音的升調量（由原聲／說話二比對量測）
+
     def __init__(self, sr=48000, low_latency=False):
         self.sr = sr
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
@@ -310,6 +361,8 @@ class VoiceFx:
     def set(self, **kw):
         tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
+        if "card" in kw:
+            tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0
         if tk:
             self.tuner.update(**tk)
         for k, v in kw.items():
