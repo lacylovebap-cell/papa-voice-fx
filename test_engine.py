@@ -157,6 +157,27 @@ inp.cb(np.zeros((BLOCK, 1), np.float32), BLOCK, None, None)
 eng.bgm_ring = None
 eng.set_params(card=False)
 
+# 伴奏對齊：直播輸出的伴奏應延後 bgm_comp 個樣本，耳機的不延後
+eng.set_params(mode="off", card=False)
+eng.bgm_ring = engine.Ring(BLOCK * 32)
+eng.bgm_on = True
+eng.bgm_comp = 1000
+eng.bgm_fifo = np.zeros(0)
+eng.mon_ring = engine.Ring(BLOCK * 16); eng.out_ring = engine.Ring(BLOCK * 16)
+imp = np.zeros(SR, np.float32); imp[5000] = 1.0
+silent = np.zeros((BLOCK, 1), np.float32)
+st_mix = []
+for s in range(0, len(imp) // BLOCK * BLOCK, BLOCK):
+    eng.bgm_ring.write(imp[s:s + BLOCK])
+    eng.out_ring = engine.Ring(BLOCK * 16)
+    inp.cb(silent, BLOCK, None, None)
+    st_mix.append(eng.out_ring.buf[:BLOCK].copy())
+st_mix = np.concatenate(st_mix)
+d = int(np.argmax(np.abs(st_mix))) - 5000
+check("直播裡伴奏延後量 = 計算值（與人聲對齊）", abs(d - 1000 - BLOCK * 3) <= BLOCK * 3 + 2, f"延後 {d} 樣本（含伴奏緩衝）")
+eng.bgm_ring = None
+eng.mon_ring = engine.Ring(BLOCK * 16); eng.out_ring = engine.Ring(BLOCK * 16)
+
 # 增益
 eng.set_gain("mon", 1.0)
 eng.set_gain("mon", 0.0)

@@ -188,7 +188,12 @@ class Engine:
         self.gains = dict(inp=1.0, mon=1.0, dry=0.0, out=1.0, bgm=0.8)
         self.backing = None
         self.bgm_ring = None
+        self.bgm_fifo = np.zeros(0)
         self.bgm_on = True
+        self.out_target = 512          # 輸出緩衝目標（樣本）
+        self.bgm_comp = 0              # 伴奏延後量（樣本），讓直播裡伴奏和人聲對齊
+        self.bgm_trim_ms = 0.0         # 使用者微調
+        self.bgm_fifo = np.zeros(0)
         self.level = 0.0
         self.info = (0.0, None, None)
         self.block = 256
@@ -275,10 +280,21 @@ class Engine:
             if self.bgm_ring is not None:
                 bg = self.bgm_ring.read(len(y), self.block * 3).astype(np.float64)
                 bg *= self.gains["bgm"] if self.bgm_on else 0.0
+                # 伴奏延後：你是聽著耳機裡的伴奏唱的，人聲回到電腦時已經晚了「一圈延遲」，
+                # 所以把伴奏同樣延後，直播裡兩者才會剛好對齊
+                want = max(0, int(self.bgm_comp + self.bgm_trim_ms * SR / 1000))
+                fifo = np.concatenate((self.bgm_fifo, bg))
+                if len(fifo) < want + len(y):
+                    fifo = np.concatenate((np.zeros(want + len(y) - len(fifo)), fifo))
+                elif len(fifo) > want + len(y):
+                    fifo = fifo[len(fifo) - (want + len(y)):]
+                bg_mix = fifo[:len(y)]
+                self.bgm_fifo = fifo[len(y):]
+                bg_mon = bg          # 耳機裡的伴奏不延後（越早聽到越好）
             else:
-                bg = 0.0
+                bg_mix = bg_mon = 0.0
             if self.recording and self.rec_samples < self.rec_max:
-                self.rec_wet.append(np.clip(y * self.gains["out"] + bg, -1, 1).astype(np.float32))
+                self.rec_wet.append(np.clip(y * self.gains["out"] + bg_mix, -1, 1).astype(np.float32))
                 self.rec_dry.append(dry.copy())
                 self.rec_samples += len(y)
             pd = self.play_data
@@ -291,29 +307,30 @@ class Engine:
                 if self.play_pos >= len(pd):
                     self.play_data = None
             else:
-                mon = (y + bg) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
+                mon = (y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"])
             self.mon_ring.write(np.clip(mon, -1.0, 1.0).astype(np.float32))
             if self.out_ring is not None:
-                self.out_ring.write(np.clip(y * self.gains["out"] + bg, -1, 1).astype(np.float32))
+                self.out_ring.write(np.clip(y * self.gains["out"] + bg_mix, -1, 1).astype(np.float32))
         except Exception as e:  # 回呼內不可丟例外，否則串流會停
             self.last_error = repr(e)
 
     def _make_out_cb(self, ring):
         def cb(outdata, frames, time_info, status):
-            y = ring.read(frames, self.block * 2)
+            y = ring.read(frames, self.out_target)
             outdata[:, 0] = y
             if outdata.shape[1] > 1:
                 outdata[:, 1] = y
         return cb
 
     # ---- 啟動／停止
-    def start(self, in_dev, mon_dev, out_dev, block=256, exclusive=False, low_latency=False, backing=None):
+    def start(self, in_dev, mon_dev, out_dev, block=256, exclusive=False, low_latency=False, backing=None, ultra=False):
         if sd is None:
             raise RuntimeError("找不到 sounddevice 套件：%s" % SD_ERROR)
         self.stop()
         self.block = int(block)
         self.last_error = None
-        self.fx = VoiceFx(SR, low_latency)
+        self.out_target = (self.block + 64) if ultra else self.block * 2
+        self.fx = VoiceFx(SR, low_latency or ultra)
         self.fx.set(**self.params)
         cap = self.block * 16
         self.mon_ring = Ring(cap)
@@ -362,8 +379,12 @@ class Engine:
                 self.backing_error = str(e)
                 self.backing = None
                 self.bgm_ring = None
+        self.bgm_fifo = np.zeros(0)
         try:
-            self.latency_ms = (opened[0].latency + opened[1].latency) * 1000 + 1000.0 * self.block / SR
+            shifter = self.fx.tuner.W / 2 + 3
+            rt = (opened[0].latency + opened[1].latency) * SR + self.out_target + shifter
+            self.latency_ms = rt * 1000.0 / SR
+            self.bgm_comp = int(rt)
         except Exception:
             self.latency_ms = 0.0
 
@@ -374,6 +395,7 @@ class Engine:
             self.backing.stop()
         self.backing = None
         self.bgm_ring = None
+        self.bgm_fifo = np.zeros(0)
         self.play_data = None
         for s in self.streams:
             try:

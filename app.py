@@ -139,6 +139,8 @@ class App:
         ttk.Button(row, text="重新整理裝置", command=self.refresh_devices).pack(side="right")
         ttk.Checkbutton(left, text="WASAPI 獨佔模式（延遲最低，需聲卡支援）", variable=self.excl).pack(anchor="w")
         ttk.Checkbutton(left, text="低延遲電音（處理視窗較短，音質稍粗）", variable=self.lowlat).pack(anchor="w")
+        self.ultra = self.var("ultra", 1, tk.IntVar)
+        ttk.Checkbutton(left, text="⚡ 超低延遲模式（區塊 128、緩衝最小；有爆音就關掉）", variable=self.ultra).pack(anchor="w")
         self.btn_start = ttk.Button(left, text="▶ 開始", style="Big.TButton", command=self.toggle)
         self.btn_start.pack(fill="x", pady=8)
         self.msg = ttk.Label(left, text="請先戴上耳機再開始。", wraplength=300, foreground="#666")
@@ -237,6 +239,8 @@ class App:
         self.btn_bgm.pack(fill="x")
         self.g_bgm = self.var("g_bgm", 80, tk.DoubleVar)
         self.slider(right, "伴奏音量", self.g_bgm, 0, 150, "{:.0f}%")
+        self.bgm_trim = self.var("bgm_trim", 0, tk.DoubleVar)
+        self.slider(right, "直播對齊微調（人聲搶拍往右、拖拍往左）", self.bgm_trim, -80, 80, "{:+.0f} ms")
         self.bgm_meter = ttk.Progressbar(right, maximum=100, length=300)
         self.bgm_meter.pack(fill="x", pady=(0, 10))
 
@@ -329,9 +333,10 @@ class App:
         self.apply()
         try:
             bgm = self.dev_bgm.get()
-            self.eng.start(in_dev, mon_dev, out_dev, block=int(self.block.get()),
+            self.eng.start(in_dev, mon_dev, out_dev, block=128 if self.ultra.get() else int(self.block.get()),
                            exclusive=bool(exclusive), low_latency=bool(self.lowlat.get()),
-                           backing=None if bgm in ("", "（不使用）") else bgm)
+                           backing=None if bgm in ("", "（不使用）") else bgm,
+                           ultra=bool(self.ultra.get()))
         except Exception as e:
             log_error(traceback.format_exc())
             if exclusive:
@@ -369,6 +374,7 @@ class App:
         self.eng.set_gain("out", self.g_out.get() / 100)
         self.eng.set_gain("bgm", self.g_bgm.get() / 100)
         self.eng.bgm_on = bool(self.bgm_on.get())
+        self.eng.bgm_trim_ms = self.bgm_trim.get()
         self.schedule_save()
 
     def preset(self, name):
@@ -512,7 +518,8 @@ class App:
             if e.backing_error or (bk is not None and bk.error):
                 bmsg = "\n伴奏擷取失敗：" + str(e.backing_error or bk.error)
             self.bgm_meter["value"] = min(100, (bk.level if bk is not None else 0) * 110)
-            self.status.config(text="預估延遲約 %.0f ms（另加電音處理 10～20 ms）\n緩衝不足次數：%d%s" % (e.latency_ms, e.underruns, bmsg))
+            self.status.config(text="你耳機聽到自己的延遲：約 %.0f ms\n直播裡伴奏已自動延後 %.0f ms 對齊人聲\n緩衝不足次數：%d（一直增加＝會爆音，請關掉超低延遲）%s"
+                               % (e.latency_ms, (e.bgm_comp / engine.SR * 1000 + self.bgm_trim.get()), e.underruns, bmsg))
             if e.recording:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             elif e.playing:
