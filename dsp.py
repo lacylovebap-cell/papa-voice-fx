@@ -1,0 +1,417 @@
+"""怕怕調音台 - DSP 核心（純 numpy / scipy，可離線測試）
+
+處理順序：電音/變調 → 電話音 → 答錄機音 → EQ → 壓縮 → 混響
+所有處理以「區塊」為單位，區塊長度需為 4 的倍數（建議 128 或 256）。
+"""
+import math
+import numpy as np
+from scipy.signal import lfilter
+
+SCALES = {
+    "major": [0, 2, 4, 5, 7, 9, 11],
+    "minor": [0, 2, 3, 5, 7, 8, 10],
+    "pent": [0, 2, 4, 7, 9],
+    "blues": [0, 3, 5, 6, 7, 10],
+}
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def note_name(m):
+    if m is None:
+        return "—"
+    m = int(round(m))
+    return f"{NOTE_NAMES[m % 12]}{m // 12 - 1}"
+
+
+# ---------------------------------------------------------------- 濾波器
+def _rbj(kind, f0, sr, gain_db=0.0, q=0.707):
+    A = 10 ** (gain_db / 40)
+    w0 = 2 * math.pi * f0 / sr
+    cw, sw = math.cos(w0), math.sin(w0)
+    alpha = sw / (2 * q)
+    if kind == "lowshelf":
+        sA = math.sqrt(A)
+        b0 = A * ((A + 1) - (A - 1) * cw + 2 * sA * alpha)
+        b1 = 2 * A * ((A - 1) - (A + 1) * cw)
+        b2 = A * ((A + 1) - (A - 1) * cw - 2 * sA * alpha)
+        a0 = (A + 1) + (A - 1) * cw + 2 * sA * alpha
+        a1 = -2 * ((A - 1) + (A + 1) * cw)
+        a2 = (A + 1) + (A - 1) * cw - 2 * sA * alpha
+    elif kind == "highshelf":
+        sA = math.sqrt(A)
+        b0 = A * ((A + 1) + (A - 1) * cw + 2 * sA * alpha)
+        b1 = -2 * A * ((A - 1) + (A + 1) * cw)
+        b2 = A * ((A + 1) + (A - 1) * cw - 2 * sA * alpha)
+        a0 = (A + 1) - (A - 1) * cw + 2 * sA * alpha
+        a1 = 2 * ((A - 1) - (A + 1) * cw)
+        a2 = (A + 1) - (A - 1) * cw - 2 * sA * alpha
+    elif kind == "peaking":
+        b0, b1, b2 = 1 + alpha * A, -2 * cw, 1 - alpha * A
+        a0, a1, a2 = 1 + alpha / A, -2 * cw, 1 - alpha / A
+    elif kind == "hp":
+        b0, b1, b2 = (1 + cw) / 2, -(1 + cw), (1 + cw) / 2
+        a0, a1, a2 = 1 + alpha, -2 * cw, 1 - alpha
+    elif kind == "lp":
+        b0, b1, b2 = (1 - cw) / 2, 1 - cw, (1 - cw) / 2
+        a0, a1, a2 = 1 + alpha, -2 * cw, 1 - alpha
+    else:
+        raise ValueError(kind)
+    return np.array([b0, b1, b2]) / a0, np.array([1.0, a1 / a0, a2 / a0])
+
+
+class Biquad:
+    def __init__(self, kind, f0, sr, gain_db=0.0, q=0.707):
+        self.kind, self.f0, self.sr, self.q = kind, f0, sr, q
+        self.zi = np.zeros(2)
+        self.set_gain(gain_db)
+
+    def set_gain(self, gain_db):
+        self.gain = gain_db
+        self.bypass = self.kind in ("lowshelf", "highshelf", "peaking") and abs(gain_db) < 0.05
+        self.b, self.a = _rbj(self.kind, self.f0, self.sr, gain_db, self.q)
+
+    def reset(self):
+        self.zi[:] = 0
+
+    def __call__(self, x):
+        if self.bypass:
+            return x
+        y, self.zi = lfilter(self.b, self.a, x, zi=self.zi)
+        return y
+
+
+# ---------------------------------------------------------------- 電音/變調
+class Tuner:
+    """YIN 音高偵測 + 音階吸附 + 雙取樣點變調。"""
+
+    DEC = 4
+    R = 512
+    H = 256
+
+    def __init__(self, sr=48000, window_ms=21.0):
+        self.sr = sr
+        self.srD = sr / self.DEC
+        self.set_window(window_ms)
+        self.L = 16384
+        self.hist = np.zeros(self.L)
+        self.phase = 0.0
+        self.dbuf = np.zeros(self.R)
+        self.tau_max = min(self.R - self.H - 1, int(self.srD / 70))
+        self.tau_min = max(2, int(self.srD / 900))
+        self.cur = 0.0
+        self.wet = 0.0
+        self.det = 0.0
+        self.target = 0.0
+        self.f = 0.0
+        self.voiced = False
+        self.unv = 99
+        self.allowed = [True] * 12
+        self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57)
+        self.update(**{})
+
+    def set_window(self, ms):
+        self.W = int(self.sr * ms / 1000)
+
+    def update(self, **kw):
+        self.p.update(kw)
+        iv = SCALES.get(self.p["scale"], SCALES["major"])
+        self.allowed = [False] * 12
+        for i in iv:
+            self.allowed[(i + int(self.p["key"])) % 12] = True
+
+    def quantize(self, det):
+        m = self.p["mode"]
+        if m == "chrom":
+            return float(round(det))
+        if m == "robot":
+            r = self.p["robot"]
+            return r + 12 * round((det - r) / 12)
+        c0 = int(round(det))
+        best, bd = c0, 1e9
+        for c in range(c0 - 6, c0 + 7):
+            if self.allowed[c % 12]:
+                dd = abs(c - det)
+                if dd < bd:
+                    bd, best = dd, c
+        return float(best)
+
+    def _detect(self):
+        H, tm = self.H, self.tau_max
+        seg = self.dbuf[-(H + tm + 1):]
+        a = seg[:H]
+        if math.sqrt(float(np.mean(seg[-H:] ** 2))) < 0.008:
+            return 0.0
+        r = np.correlate(seg, a, mode="valid")  # r[k] = sum a[j]*seg[j+k], k=0..tm
+        cs = np.concatenate(([0.0], np.cumsum(seg * seg)))
+        e1 = cs[H] - cs[0]
+        taus = np.arange(1, tm + 1)
+        e2 = cs[taus + H] - cs[taus]
+        d = e1 + e2 - 2 * r[1: tm + 1]
+        d = np.maximum(d, 0.0)
+        cm = np.ones(tm + 2)
+        csum = np.cumsum(d)
+        cm[1: tm + 1] = np.where(csum > 0, d * taus / np.maximum(csum, 1e-12), 1.0)
+        cand = np.nonzero(cm[self.tau_min: tm] < 0.15)[0]
+        if len(cand) == 0:
+            return 0.0
+        t = int(cand[0]) + self.tau_min
+        while t + 1 < tm and cm[t + 1] < cm[t]:
+            t += 1
+        tr = float(t)
+        if 1 < t < tm:
+            a0, b0, c0 = cm[t - 1], cm[t], cm[t + 1]
+            den = a0 - 2 * b0 + c0
+            if abs(den) > 1e-9:
+                tr = t + (a0 - c0) / (2 * den)
+        f = self.srD / tr
+        return f if 70 <= f <= 900 else 0.0
+
+    def process(self, x):
+        n = len(x)
+        p = self.p
+        active = p["mode"] != "off"
+        xd = x.reshape(-1, self.DEC).mean(axis=1)
+        self.dbuf = np.concatenate((self.dbuf, xd))[-self.R:]
+        f = self._detect()
+        self.f = f
+        if f > 0:
+            self.unv = 0
+            self.det = 69 + 12 * math.log2(f / 440.0)
+            self.target = self.quantize(self.det) if active else self.det
+            self.voiced = True
+        else:
+            self.unv += 1
+            if self.unv > 3:
+                self.voiced = False
+
+        if active and self.voiced:
+            want = (self.target - self.det) * p["strength"] + p["shift"]
+            tau = p["speed"] * 0.4
+            alpha = 1 - math.exp(-n / (self.sr * tau)) if tau > 0.0005 else 1.0
+        else:
+            want = p["shift"]
+            alpha = 0.15
+        if self.voiced and self.unv > 0:
+            want = self.cur
+        self.cur += (want - self.cur) * alpha
+
+        wet_t = 1.0 if (active or abs(p["shift"]) > 0.001) else 0.0
+        k = np.arange(1, n + 1)
+        wet = wet_t + (self.wet - wet_t) * (0.997 ** k)
+        self.wet = float(wet[-1])
+        if self.wet < 0.0005 and wet_t == 0.0:
+            self.hist = np.concatenate((self.hist, x))[-self.L:]
+            return x
+
+        r = 2 ** (self.cur / 12)
+        inc = (1 - r) / self.W
+        ph = (self.phase + inc * np.arange(n)) % 1.0
+        ph2 = (ph + 0.5) % 1.0
+        g1 = 0.5 - 0.5 * np.cos(2 * np.pi * ph)
+        g2 = 1 - g1
+        ext = np.concatenate((self.hist, x))
+        idx = self.L + np.arange(n)
+        s = 0.0
+        for g, phx in ((g1, ph), (g2, ph2)):
+            pos = idx - (phx * self.W + 2)
+            i0 = np.floor(pos).astype(np.int64)
+            fr = pos - i0
+            s = s + g * (ext[i0] * (1 - fr) + ext[i0 + 1] * fr)
+        self.phase = float((self.phase + inc * n) % 1.0)
+        self.hist = ext[-self.L:]
+        return x * (1 - wet) + s * wet
+
+
+# ---------------------------------------------------------------- 壓縮
+class Compressor:
+    def __init__(self):
+        self.gain_db = 0.0
+        self.amount = 0.4
+
+    def process(self, x):
+        c = self.amount
+        if c <= 0.001:
+            self.gain_db *= 0.9
+            if abs(self.gain_db) < 0.01:
+                return x
+        n = len(x)
+        level = 20 * math.log10(max(float(np.sqrt(np.mean(x * x))), 1e-5))
+        thr = -6 - 30 * c
+        ratio = 1 + 7 * c
+        tgt = min(0.0, (thr - level) * (1 - 1 / ratio)) if c > 0.001 else 0.0
+        coef = 0.6 if tgt < self.gain_db else 0.08  # 變小快、回復慢
+        new = self.gain_db + (tgt - self.gain_db) * coef
+        g = 10 ** (np.linspace(self.gain_db, new, n, endpoint=False) / 20)
+        self.gain_db = new
+        return x * g * (1.0 + 0.4 * c)
+
+
+# ---------------------------------------------------------------- 混響
+class Reverb:
+    COMB = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
+    ALLP = [347, 441, 556, 701]
+
+    def __init__(self, sr=48000):
+        s = sr / 44100.0
+        self.cd = [int(d * s) for d in self.COMB]
+        self.ad = [int(d * s) for d in self.ALLP]
+        self.ch = [np.zeros(d) for d in self.cd]
+        self.ah = [np.zeros(d) for d in self.ad]
+        self.g = 0.82
+        self.damp = [0.0] * len(self.cd)
+        self.min_delay = min(self.cd + self.ad)
+
+    def process(self, x):
+        n = len(x)
+        if n > self.min_delay:
+            raise ValueError("區塊太大，需 <= %d" % self.min_delay)
+        acc = np.zeros(n)
+        for i, d in enumerate(self.cd):
+            prev = self.ch[i][:n]
+            y = x + self.g * prev
+            self.ch[i] = np.concatenate((self.ch[i][n:], y))
+            acc += y
+        y = acc * 0.1
+        for i, d in enumerate(self.ad):
+            wh = self.ah[i][:n]
+            w = y + 0.5 * wh
+            y = -0.5 * w + wh
+            self.ah[i] = np.concatenate((self.ah[i][n:], w))
+        return y
+
+
+# ---------------------------------------------------------------- 整合
+class VoiceFx:
+    def __init__(self, sr=48000, low_latency=False):
+        self.sr = sr
+        self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
+        self.p = dict(
+            phone=False, phone_dist=0.25, machine=False,
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False,
+        )
+        # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
+        self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
+        # 電話音
+        self.ph_hp = [Biquad("hp", 320, sr, q=0.9) for _ in range(2)]
+        self.ph_lp = [Biquad("lp", 3300, sr, q=0.9) for _ in range(2)]
+        self.ph_mix = 0.0
+        # 答錄機音
+        self.m_hp = Biquad("hp", 260, sr, q=0.8)
+        self.m_lp = [Biquad("lp", 3000, sr, q=0.8) for _ in range(2)]
+        self.m_rec = [Biquad("lp", 3300, sr, q=0.7) for _ in range(2)]  # 降取樣後的重建濾波
+        self.m_mix = 0.0
+        self.m_hist = np.zeros(128)
+        self.m_cnt = 0
+        self.m_held = 0.0
+        self.rng = np.random.default_rng(1)
+        # 音色
+        self.eq = [Biquad("lowshelf", 150, sr), Biquad("peaking", 2200, sr, q=0.8), Biquad("highshelf", 7000, sr)]
+        self.comp = Compressor()
+        self.verb = Reverb(sr)
+        self.info = (0.0, None, None)
+        self.set()
+
+    def set(self, **kw):
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot"}
+        tk = {k: v for k, v in kw.items() if k in tuner_keys}
+        if tk:
+            self.tuner.update(**tk)
+        for k, v in kw.items():
+            if k in self.p:
+                self.p[k] = v
+        self.eq[0].set_gain(self.p["eq_lo"])
+        self.eq[1].set_gain(self.p["eq_mid"])
+        self.eq[2].set_gain(self.p["eq_hi"])
+        self.comp.amount = self.p["comp"]
+
+    # ----- 效果分支
+    def _phone(self, x):
+        y = x
+        for f in self.ph_hp + self.ph_lp:
+            y = f(y)
+        k = self.p["phone_dist"] * 40
+        y = ((1 + k) * y) / (1 + k * np.abs(y))
+        return y * 1.6
+
+    def _machine(self, x):
+        """答錄機音（第一版）：窄頻、8kHz 取樣、低位元、磁帶抖動、底噪。"""
+        n = len(x)
+        y = self.m_hp(x)
+        for f in self.m_lp:
+            y = f(y)
+        # 降取樣率到 8kHz（零階保持）
+        step = max(1, int(round(self.sr / 8000)))
+        g = self.m_cnt + np.arange(n)
+        mask = (g % step) == 0
+        idxs = np.maximum.accumulate(np.where(mask, np.arange(n), -1))
+        held = np.where(idxs >= 0, y[np.maximum(idxs, 0)], self.m_held)
+        self.m_held = float(held[-1])
+        y = held
+        # 低位元
+        lv = 2 ** 9
+        y = np.round(y * lv) / lv
+        for f in self.m_rec:
+            y = f(y)
+        # 磁帶抖動（慢速漂移＋快速顫動）
+        t = (g) / self.sr
+        d = 16 + 5 * np.sin(2 * np.pi * 0.6 * t) + 1.5 * np.sin(2 * np.pi * 5.5 * t + 1.0)
+        L = len(self.m_hist)
+        ext = np.concatenate((self.m_hist, y))
+        pos = L + np.arange(n) - d
+        i0 = np.floor(pos).astype(np.int64)
+        fr = pos - i0
+        y = ext[i0] * (1 - fr) + ext[i0 + 1] * fr
+        self.m_hist = ext[-L:]
+        self.m_cnt += n
+        # 底噪＋輕微飽和
+        y = y + self.rng.standard_normal(n) * 0.003
+        y = np.tanh(1.6 * y) / 1.6
+        return y * 1.4
+
+    @staticmethod
+    def _xfade(dry, wet, m0, m1):
+        n = len(dry)
+        r = np.linspace(m0, m1, n, endpoint=False)
+        return dry * (1 - r) + wet * r
+
+    def process(self, x):
+        x = np.asarray(x, dtype=np.float64)
+        n0 = len(x)
+        pad = (-n0) % 4
+        if pad:
+            x = np.concatenate((x, np.zeros(pad)))
+        y = self.tuner.process(x)
+        self.info = (self.tuner.f,
+                     self.tuner.det if self.tuner.voiced else None,
+                     self.tuner.target if self.tuner.voiced and self.tuner.p["mode"] != "off" else None)
+
+        # 電話音
+        pt = 1.0 if self.p["phone"] else 0.0
+        if pt > 0 or self.ph_mix > 0.001:
+            y = self._xfade(y, self._phone(y), self.ph_mix, pt)
+        else:
+            for f in self.ph_hp + self.ph_lp:
+                f.reset()
+        self.ph_mix = pt
+        # 答錄機
+        mt = 1.0 if self.p["machine"] else 0.0
+        if mt > 0 or self.m_mix > 0.001:
+            y = self._xfade(y, self._machine(y), self.m_mix, mt)
+        self.m_mix = mt
+
+        if self.p["card"]:
+            for f in self.card_eq:
+                y = f(y)
+        else:
+            for f in self.card_eq:
+                f.reset()
+        for f in self.eq:
+            y = f(y)
+        y = self.comp.process(y)
+        v = self.p["verb"]
+        if v > 0.001:
+            y = y + self.verb.process(y) * (v * 0.8)
+        else:
+            self.verb.process(y)  # 保持尾巴狀態連續
+        y = np.clip(y, -1.0, 1.0)
+        return y[:n0].astype(np.float32)
