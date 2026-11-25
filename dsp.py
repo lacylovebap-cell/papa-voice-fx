@@ -143,7 +143,7 @@ class Tuner:
         self.held = None
         self.kcount = 0
         self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0,
-                      flex=0.0, humanize=0.0)
+                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0)
         self.hold_t = 0.0
         self.prev_target = None
         self.update(**{})
@@ -166,7 +166,7 @@ class Tuner:
     def sticky(self, t, x):
         """黏住目前的音：聲音沒有明顯離開（< 0.7 半音）就不換音，避免在兩個音之間抖。"""
         h = self.held
-        if h is not None and abs(x - h) < 0.7 and t != h:
+        if h is not None and abs(x - h) < self.p.get("sticky", 0.7) and t != h:
             return h
         self.held = t
         return t
@@ -242,7 +242,7 @@ class Tuner:
             raw = 69 + 12 * math.log2(f / 440.0)
             if self.unv == 0 and abs(raw - self.raw_prev) < 0.7:
                 slope = raw - self.raw_prev            # 每區塊變化量
-                pred = raw + slope * self.PREDICT
+                pred = raw + slope * self.p.get("predict", self.PREDICT)
             else:
                 pred = raw
             self.raw_prev = raw
@@ -472,7 +472,7 @@ class ElectroLayer:
         ech = self.echo[ri].copy()
         self.echo[(self.ew + np.arange(n)) % E] = y + ech * 0.28
         self.ew = (self.ew + n) % E
-        wet = y + amt * (0.55 * dbl + 0.22 * ech)
+        wet = y + amt * 0.55 * dbl     # 不加回音：混響只由使用者的「混響」拉桿決定
         bright = self.pres(self.air(wet))
         return y * (1 - amt) + bright * amt
 
@@ -487,6 +487,45 @@ VOICE_COLORS = {
     "古風戲腔": [(80, -3, 1.2), (250, -2, 1.0), (1500, 3, 0.8), (4000, 4, 1.0), (10000, 3, 1.2)],
     "ASMR": [(300, 6, 0.5), (1200, -4, 2.0), (4000, 3, 0.8), (8000, 6, 1.5), (12000, 5, 0.3)],
 }
+
+
+# ---------------------------------------------------------------- 金屬共鳴（更電的機械感）
+class MetalComb:
+    """跟著目前的目標音調整的回授梳狀濾波器：只放大「準確音高」的泛音，聲音變得更像電子合成、更電。"""
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.L = 4096
+        self.buf = np.zeros(self.L)
+        self.w = 0
+        self.D = 200.0
+
+    def process(self, x, amt, midi):
+        if amt <= 0.001:
+            # 保持狀態連續
+            idx = (self.w + np.arange(len(x))) % self.L
+            self.buf[idx] = x
+            self.w = (self.w + len(x)) % self.L
+            return x
+        if midi is not None:
+            f = 440.0 * 2 ** ((midi - 69) / 12)
+            D = min(self.L - 2, max(20.0, self.sr / f))
+            self.D += (D - self.D) * 0.5
+        # 有唱音時才共鳴；一停下來立刻收掉，不留尾音（不會像回音／混響）
+        g = (0.35 + 0.35 * amt) if midi is not None else 0.0
+        out = np.empty(len(x))
+        D = self.D
+        i0 = int(np.floor(D)); fr = D - i0
+        buf, L, w = self.buf, self.L, self.w
+        for i in range(len(x)):
+            a = buf[(w - i0) % L]; b = buf[(w - i0 - 1) % L]
+            y = x[i] + g * (a * (1 - fr) + b * fr)
+            buf[w] = y
+            out[i] = y
+            w = (w + 1) % L
+        self.w = w
+        y = out * (1 - g)                 # 補償回授造成的音量增加
+        return x * (1 - amt) + y * amt
 
 
 # ---------------------------------------------------------------- 去齒音
@@ -563,7 +602,7 @@ class VoiceFx:
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
-            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0,
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -581,6 +620,7 @@ class VoiceFx:
         self.comp = Compressor()
         self.electro = ElectroLayer(sr)
         self.deesser = DeEsser(sr)
+        self.metal = MetalComb(sr)
         self.color_eq = []
         self._color = None
         self.verb = Reverb(sr)
@@ -588,7 +628,7 @@ class VoiceFx:
         self.set()
 
     def set(self, **kw):
-        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize"}
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
         if "card" in kw:
             tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0
@@ -659,6 +699,8 @@ class VoiceFx:
         else:
             for f in self.card_eq:
                 f.reset()
+        tg = self.tuner.target if (self.tuner.voiced and self.tuner.p["mode"] != "off") else None
+        y = self.metal.process(y, float(self.p["metal"]), tg)
         if self.p["electro_fx"] > 0.001:
             y = self.electro.process(y, float(self.p["electro_fx"]))
         for f in self.color_eq:

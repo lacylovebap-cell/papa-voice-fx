@@ -21,7 +21,7 @@ PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 自然修音", "electro": "
 PRESETS = {
     "talk": dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, eq_lo=0, eq_mid=2, eq_hi=2),
     "sing": dict(electro_fx=0, mode="natural", phone=0, machine=0, strength=85, speed=10, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=2),
-    "electro": dict(electro_fx=60, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
+    "electro": dict(electro_fx=0, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
     "phone": dict(electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
     "machine": dict(electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
 }
@@ -70,34 +70,40 @@ def log_error(text):
 
 # 電音風格（參數來自 Auto-Tune 常用設定：修正速度 ms、Flex-Tune、Humanize、電音質感）
 EL_STYLES = {
-    "超電（最強）": (0, 0, 0, 70),
-    "流行網感（微微電音）": (30, 25, 60, 30),
-    "抒情": (20, 20, 20, 20),
-    "現代流行": (40, 0, 20, 40),
-    "說唱（最電）": (10, 5, 10, 60),
+    # 名稱: (修正速度 ms, Flex-Tune, Humanize, 雙重唱亮度, 金屬共鳴)，由弱到強
+    "微電": (10, 5, 10, 0, 0),
+    "電音": (0, 0, 0, 0, 0),
+    "強電": (0, 0, 0, 50, 50),
+    "爆電（最強）": (0, 0, 0, 90, 100),
 }
 # 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
 NATURAL = (60, 20, 100)
 
 
 class Wave(tk.Canvas):
-    """會跳動的聲音波形：最近約 3 秒的音量，一根一根往左捲。"""
+    """會跳動的聲音波形：最近約 3 秒的音量。整條用一條線畫，很省電腦資源（不會搶走處理聲音的時間）。"""
 
     def __init__(self, parent, color, w=210, h=34):
         super().__init__(parent, width=w, height=h, bg="#0e0c16", highlightthickness=0)
         self.w, self.h, self.color = w, h, color
-        n = w // 3
-        self.hist = collections.deque([0.0] * n, maxlen=n)
-        self.lines = [self.create_line(i * 3 + 1, h / 2 - 1, i * 3 + 1, h / 2 + 1, fill="#3a3550", width=2) for i in range(n)]
+        self.n = w // 3
+        self.hist = collections.deque([0.0] * self.n, maxlen=self.n)
+        mid = h / 2
+        self.base = self.create_line(0, mid, w, mid, fill="#3a3550")
+        self.line = self.create_line(*self._points(), fill=color, width=2)
+
+    def _points(self):
+        mid = self.h / 2
+        pts = []
+        for i, v in enumerate(self.hist):
+            a = max(0.5, v ** 0.5 * (mid - 2))
+            x = i * 3 + 1
+            pts += [x, mid - a, x, mid + a, x + 1.5, mid]
+        return pts
 
     def push(self, level):
         self.hist.append(min(1.0, max(0.0, level)))
-        mid = self.h / 2
-        for line, v, i in zip(self.lines, self.hist, range(len(self.lines))):
-            a = max(1.0, v ** 0.5 * (mid - 2))   # 開根號讓小聲也看得見
-            x = i * 3 + 1
-            self.coords(line, x, mid - a, x, mid + a)
-            self.itemconfig(line, fill=self.color if v > 0.003 else "#3a3550")
+        self.coords(self.line, *self._points())
 
 
 class App:
@@ -166,9 +172,9 @@ class App:
         self.verb = self.var("verb", 15, D)
         self.deess = self.var("deess", 40, D)
         self.g_dry = self.var("g_dry", 0, D)
-        self.el_style = self.var("el_style2", "超電（最強）")
+        self.el_style = self.var("el_style3", "電音")
         if self.el_style.get() not in EL_STYLES:
-            self.el_style.set("超電（最強）")
+            self.el_style.set("電音")
         self.color = tk.StringVar(value="原本")   # 音色跟著效果走（不另外選）
         # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
         for k, v in NEUTRAL.items():
@@ -261,9 +267,12 @@ class App:
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
         self.label(el, "電音風格：", 10).pack(side="left")
-        c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="readonly", width=18)
+        c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="disabled", width=14)
         c1.pack(side="left")
         c1.bind("<<ComboboxSelected>>", lambda e: self.apply())
+        self.cb_style = c1
+        self.style_hint = self.label(el, "（先按「⚡ 電音」才能選）", 9, C_SUB)
+        self.style_hint.pack(side="left", padx=6)
 
         self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n兩個都已經包含人聲修飾的音色，不用另外調。",
                    9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
@@ -426,16 +435,16 @@ class App:
         mode = self.mode.get()
         strength = float(self.strength.get()) / 100
         speed = float(self.speed.get()) / 100
-        flex = humanize = 0.0
+        flex = humanize = metal = 0.0
         electro_fx = float(self.electro_fx.get()) / 100
         if self.active_preset == "electro":
-            ms, fl, hu, efx = EL_STYLES[self.el_style.get()]
-            strength, speed, flex, humanize, electro_fx = 1.0, ms / 400, fl / 100, hu / 100, efx / 100
+            ms, fl, hu, efx, mt = EL_STYLES[self.el_style.get()]
+            strength, speed, flex, humanize, electro_fx, metal = 1.0, ms / 400, fl / 100, hu / 100, efx / 100, mt / 100
         elif self.active_preset == "sing":
             ms, fl, hu = NATURAL
             strength, speed, flex, humanize = 1.0, ms / 400, fl / 100, hu / 100
         color = "人聲修飾" if self.active_preset in ("sing", "electro") else "原本"
-        kw = dict(flex=flex, humanize=humanize, color=color,
+        kw = dict(flex=flex, humanize=humanize, color=color, metal=metal,
             mode=mode, key=0, scale="major", strength=strength, speed=speed,
             shift=float(self.shift.get()), robot=57,
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
@@ -493,6 +502,9 @@ class App:
         c = C_GREEN if b else C_BTN
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
                             fg="#0b2216" if b else C_TXT)
+        el_on = self.active_preset == "electro"
+        self.cb_style.config(state="readonly" if el_on else "disabled")
+        self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」才能選）")
         none = self.active_preset is None
         c = C_GREEN if none else C_BTN
         self.btn_none.config(bg=c, activebackground=c, fg="#0b2216" if none else C_TXT)
@@ -621,10 +633,10 @@ class App:
             if not e.playing and self._play_which is not None:
                 self._play_which = None
                 self.refresh_buttons()
-        self.root.after(40, self.tick)
+        self.root.after(60, self.tick)
 
     def auto_protect(self):
-        """偵測到爆音（緩衝不足）就自動加大緩衝重新連線：128 → 256 → 512 → 1024。"""
+        """偵測到爆音就自動加大緩衝重新連線：128 → 256 → 512（最多到 512，避免延遲太大）。"""
         import time
         now = time.time()
         if now - getattr(self, "_started_at", 0) < 4.0:     # 剛開始的幾秒一定會有短暫不穩，不算
@@ -635,7 +647,7 @@ class App:
         if len(self._ur_hist) < 2:
             return
         grew = self._ur_hist[-1][1] - self._ur_hist[0][1]
-        if grew >= 4 and self.block_now < 1024:
+        if grew >= 4 and self.block_now < 512:
             self.block_now *= 2
             if self.ultra.get():
                 self.ultra.set(0)
@@ -673,7 +685,19 @@ def already_running():
         return None
 
 
+def boost_priority():
+    """讓 Windows 優先處理調音台（聲音比較不會被其他程式卡到）。"""
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        k.SetPriorityClass(k.GetCurrentProcess(), 0x00000080)   # HIGH_PRIORITY_CLASS
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
+
+
 def main():
+    boost_priority()
     srv = already_running()
     if srv is None:
         return

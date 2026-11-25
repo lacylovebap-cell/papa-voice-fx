@@ -29,7 +29,7 @@ for name in app.PRESETS:
           and not fx.params["phone"] and not fx.params["machine"] and fx.params["card"] is True)
 
 a.preset("electro")
-check("電音：電音質感開啟", fx.params["electro_fx"] > 0.1 and fx.params["mode"] == "electro")
+check("電音：開啟電音模式", fx.params["mode"] == "electro")
 a.preset("phone")
 check("換成電話音：電音質感關掉", fx.params["electro_fx"] == 0)
 check("切換到另一個效果：前一個被取代", a.active_preset == "phone" and fx.params["mode"] == "off" and fx.params["phone"])
@@ -58,15 +58,16 @@ check("伴奏來源清單可讀取", isinstance(list(a.cb_bgm["values"]), list))
 # 電音與自然修音：自動判斷調，不用選調
 a.preset("electro")
 check("電音：自動跟調模式", fx.params["mode"] == "electro")
-a.el_style.set("說唱（最電）"); a.apply()
-s_hard = fx.params["speed"]
-a.el_style.set("超電（最強）"); a.apply()
-check("超電：修正速度 0、不放過任何偏音", fx.params["speed"] == 0 and fx.params["flex"] == 0 and fx.params["humanize"] == 0)
-a.el_style.set("流行網感（微微電音）"); a.apply()
-check("電音風格：說唱比流行網感更硬", s_hard < fx.params["speed"] and fx.params["humanize"] > 0.5)
+levels = []
+for st in ["微電", "電音", "強電", "爆電（最強）"]:
+    a.el_style.set(st); a.apply()
+    levels.append((fx.params["speed"], fx.params["electro_fx"], fx.params["metal"]))
+check("電音 4 級由弱到強", levels[0][0] > levels[1][0] and levels[2][2] > levels[1][2] and levels[3][2] > levels[2][2], str(levels))
+check("電音風格選單：電音開著時可以選", str(a.cb_style.cget("state")) == "readonly")
 check("電音已包含人聲修飾音色（不用另外選）", fx.params["color"] == "人聲修飾")
 a.preset("electro")
 check("再按電音：關掉", fx.params["mode"] == "off")
+check("電音風格選單：沒開電音時不能選", str(a.cb_style.cget("state")) == "disabled")
 a.preset("sing")
 check("自然修音：自動跟調、保留顫音模式，含人聲修飾", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0 and fx.params["color"] == "人聲修飾")
 a.preset("sing")
@@ -101,6 +102,14 @@ type(a.eng).underruns = property(lambda self: ur[0])
 a._ur_hist = []; a.block_now = 256; a._started_at = 0
 a.auto_protect(); ur[0] = 6; a.auto_protect()
 check("爆音時自動加大緩衝", a.block_now == 512 and starts == [512], str(starts))
+ur[0] = 20; a._ur_hist = []; a.auto_protect(); ur[0] = 40; a.auto_protect()
+check("緩衝最多只加到 512（不會到 1024）", a.block_now == 512, str(a.block_now))
+import time as _t
+t0 = _t.perf_counter()
+for _ in range(200):
+    a.wave_inp.push(0.5)
+dt = (_t.perf_counter() - t0) / 200 * 1000
+check("波形更新很省資源（每次 < 2 ms）", dt < 2.0, "%.2f ms" % dt)
 a.eng.running = False
 # 單一執行個體：第二個不會開起來
 srv1 = app.already_running()

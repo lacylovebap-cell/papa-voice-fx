@@ -215,6 +215,12 @@ seg0, seg1 = o0[SR // 2:SR // 2 + 16384], o1[SR // 2:SR // 2 + 16384]
 hf = lambda s: band_energy(s, 8000, 14000) / band_energy(s, 500, 2000)
 check("電音質感：高頻更亮", hf(seg1) > hf(seg0) * 1.5, f"{hf(seg1) / hf(seg0):.2f} 倍")
 check("電音質感：輸出有效", np.all(np.isfinite(o1)) and np.max(np.abs(o1)) <= 1.0)
+# 不自帶回音：短聲之後 100～400 ms 不應有明顯的回聲
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="electro", electro_fx=0.9, metal=1.0)
+imp = np.zeros(SR, np.float32); imp[1000:1480] = 0.5 * np.sin(2 * np.pi * 300 * np.arange(480) / SR)
+oi = np.concatenate([fx.process(imp[s0:s0 + 256]) for s0 in range(0, SR // 256 * 256, 256)])
+tail = np.sqrt(np.mean(oi[1480 + SR // 10:1480 + int(SR * 0.4)] ** 2)); head = np.sqrt(np.mean(oi[1000:1480] ** 2))
+check("電音不自帶回音／混響（混響 0% 時）", 20 * np.log10(tail / head + 1e-12) < -40, "%.0f dB" % (20 * np.log10(tail / head + 1e-12)))
 
 # ---------- 電音能把顫音壓平
 tv = np.arange(SR * 3) / SR
