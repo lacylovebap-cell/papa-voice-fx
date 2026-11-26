@@ -77,13 +77,95 @@ check("電音風格選單：沒開電音時不能選", str(a.cb_style.cget("stat
 a.preset("sing")
 check("自然修音：自動跟調、保留顫音模式，含人聲修飾", fx.params["mode"] == "natural" and fx.params["humanize"] == 1.0 and fx.params["color"] == "人聲修飾")
 a.preset("sing")
-# 混響與去齒音固定：切換效果不會改變
-a.verb.set(37); a.deess.set(55); a.apply()
+# 混響與去齒音固定：切換效果不會改變，按效果也不會自己加混響
+a.rv[0]["type"].set("大廳"); a.on_reverb_type(0); a.rv[0]["mix"].set(37); a.deess.set(55); a.apply()
 for name in list(app.PRESETS) + list(app.PRESETS):
     a.preset(name)
 a.clear_fx()
-check("切換所有效果後，混響仍是 37%", abs(fx.params["verb"] - 0.37) < 1e-6 and abs(float(a.verb.get()) - 37) < 1e-6)
+check("切換所有效果後，混響 A 仍是大廳 37%", abs(fx.params["rv1_mix"] - 0.37) < 1e-6 and fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1)
 check("切換所有效果後，去齒音仍是 55%", abs(fx.params["deess"] - 0.55) < 1e-6)
+for r in a.rv:
+    r["mix"].set(0)
+a.apply()
+for name in app.PRESETS:
+    a.preset(name)
+    check("按 %s 不會自己加混響" % app.PRESET_NAMES[name], all(fx.params["rv%d_mix" % (i + 1)] == 0 for i in range(3)))
+    a.preset(name)
+# 混響類型：換類型會帶入那個類型的建議值
+a.rv[1]["type"].set("教堂"); a.on_reverb_type(1)
+check("混響 B 選教堂：殘響長度等於教堂預設、深度自動給 30%", abs(float(a.rv[1]["size"].get()) - 90) < 0.6
+      and abs(float(a.rv[1]["mix"].get()) - 30) < 1e-6 and fx.params["rv2_type"] == app.REVERB_NAMES.index("教堂") + 1)
+a.rv[1]["width"].set(40); a.rv[1]["lowcut"].set(250); a.apply()
+check("混響細調：立體寬度、低頻清除有送出", abs(fx.params["rv2_width"] - 0.4) < 1e-6 and fx.params["rv2_lowcut"] == 250)
+# 效果按鈕上方顯示快捷鍵
+check("效果按鈕上方顯示快捷鍵（機器人 Ctrl+Alt+7）", a.preset_hk["robot"].cget("text") == "Ctrl+Alt+7" and a.none_hk.cget("text") == "Ctrl+Alt+0")
+# 每個效果都能細調，而且會記住
+a.preset("electro")
+a.fxv["retune"].set(35); a.on_tweak("retune")
+check("電音細調：修正速度 35 ms 生效", abs(fx.params["speed"] - 35 / 400) < 1e-9)
+a.preset("phone"); a.preset("electro")
+check("切到別的效果再切回電音：細調還在", abs(float(a.fxv["retune"].get()) - 35) < 1e-9 and abs(fx.params["speed"] - 35 / 400) < 1e-9)
+a.apply_ref_preset("electro", "流行網感（35／25／80）")
+check("套用 Auto-Tune 參考預設（流行網感 35/25/80）", abs(fx.params["flex"] - 0.25) < 1e-9 and abs(fx.params["humanize"] - 0.8) < 1e-9)
+a.fxv["vibrato"].set(3.0); a.on_tweak("vibrato")
+check("自然顫音旋鈕有送出", abs(fx.params["vibrato"] - 3.0) < 1e-9)
+a.reset_tweaks("electro")
+check("恢復電音預設", float(a.fxv["retune"].get()) == 0 and fx.params["flex"] == 0 and fx.params["vibrato"] == 0)
+a.preset("electro")
+a.preset("robot"); a.fxv["robot_note"].set(62); a.on_tweak("robot_note")
+check("機器人音高可以調", fx.params["robot"] == 62)
+a.preset("robot")
+# 混音台頁面
+a.preset("sing")
+a.open_mixer("fx"); root.update()
+check("混音台：自然修音的旋鈕（修正速度、自然顫音…）", all(k in a.mixer.knobs for k in ("retune", "flex", "humanize", "vibrato", "eq_hi")))
+a.mixer.knobs["retune"].set(120)
+check("混音台：轉旋鈕就生效並記住", abs(fx.params["speed"] - 0.3) < 1e-9 and a.fx_tweaks.get("sing", {}).get("retune") == 120)
+a.mixer.knobs["retune"].set(a.mixer.knobs["retune"].default)
+check("旋鈕回到預設＝不留細調", "retune" not in a.fx_tweaks.get("sing", {}))
+a.preset("sing")
+a.open_mixer("rv", 1); root.update()
+check("混音台：混響編輯器有深度、殘響長度、明亮度、預延遲、立體寬度、低頻清除",
+      all(k in a.mixer.knobs for k in ("mix", "size", "bright", "pre", "width", "lowcut")))
+a.open_mixer("align"); root.update()
+check("混音台：伴奏對齊旋鈕", "bgm_trim" in a.mixer.knobs)
+a.open_mixer("card"); root.update()
+a.nb.select(0)
+# 我的設定（自己取名字）
+from tkinter import simpledialog
+messagebox.askyesno = lambda *x, **k: True
+card0 = a.card.get()
+a.preset("electro"); a.fxv["retune"].set(20); a.on_tweak("retune")
+a.rv[2]["type"].set("房間"); a.on_reverb_type(2); a.rv[2]["mix"].set(22); a.apply()
+simpledialog.askstring = lambda *x, **k: "怕怕專屬一"
+a.save_scene()
+check("存成「怕怕專屬一」：上面出現按鈕", "怕怕專屬一" in a.scenes and "怕怕專屬一" in a.scene_btns)
+a.clear_fx(); a.rv[2]["mix"].set(0); a.rv[2]["type"].set("關"); a.reset_tweaks("electro"); a.apply()
+a.preset("talk")
+a.save_scene("怕怕說唱")
+a.load_scene("怕怕專屬一")
+check("一鍵切回「怕怕專屬一」：電音＋細調＋混響都回來", a.active_preset == "electro" and abs(fx.params["speed"] - 20 / 400) < 1e-9
+      and a.rv[2]["type"].get() == "房間" and abs(fx.params["rv3_mix"] - 0.22) < 1e-6)
+check("切換我的設定不會動到變聲開關", a.card.get() == card0)
+a.load_scene_index(1)
+check("第二組（F2）：怕怕說唱 → 說話", a.active_preset == "talk" and a.current_scene == "怕怕說唱")
+simpledialog.askstring = lambda *x, **k: "怕怕說唱2"
+a.rename_scene("怕怕說唱")
+check("改名", "怕怕說唱2" in a.scenes and "怕怕說唱" not in a.scenes)
+a.delete_scene("怕怕說唱2")
+check("刪除", "怕怕說唱2" not in a.scenes and list(a.scenes) == ["怕怕專屬一"])
+a.save_settings()
+s2 = a.load_settings()
+check("我的設定、細調會存進設定檔", "怕怕專屬一" in s2.get("scenes", "") and "fx_tweaks" in s2)
+a.clear_fx()
+# 伴奏對齊：錄音分開存人聲和伴奏，播放時照目前的對齊重新混
+import numpy as _np
+v0 = _np.zeros(48000, _np.float32); b0 = _np.zeros(48000, _np.float32); b0[1000] = 0.5
+tk_ = dict(name="t", wet=v0 + b0, dry=v0, voice=v0, bgm=b0, secs=1.0, trim=0.0)
+a.bgm_trim.set(10); m1 = a.take_mix(tk_)
+a.bgm_trim.set(-10); m2 = a.take_mix(tk_)
+a.bgm_trim.set(0); m3 = a.take_mix(tk_)
+check("伴奏對齊：往右 10 ms＝伴奏晚 480 樣本；往左＝早 480 樣本", int(_np.argmax(m1)) == 1480 and int(_np.argmax(m2)) == 520 and int(_np.argmax(m3)) == 1000)
 # 跳動波形
 a.eng.running = True
 a.eng.lv.update(inp=0.5, mon=0.3, out=0.4, bgm=0.2)

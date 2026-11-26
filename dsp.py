@@ -126,6 +126,7 @@ class Tuner:
     DMIN = 3.0       # 讀取頭最少延遲（內插需要）
     JFLOOR = 96      # 每次至少跳 2 ms
     SHIFT_LAT = 120  # 變調平均延遲估計（樣本，約 2.5 ms，伴奏對時用）
+    LOOKAHEAD = 360  # 壓平音高的模式（電音、機器人）多等 7.5 ms，讓音高判斷跟上（說話、自然修音不用等）
     H = 256
 
     def __init__(self, sr=48000, window_ms=21.0):
@@ -167,6 +168,7 @@ class Tuner:
         self.prog = 0
         self.xk = 1.0
         self.splices = 0
+        self.extra = 0.0
 
     def update(self, **kw):
         self.p.update(kw)
@@ -335,6 +337,7 @@ class Tuner:
             return x
 
         r = 2 ** ((self.cur + self.vt) / 12)
+        self.extra = float(self.LOOKAHEAD) if p["mode"] in ("electro", "chrom", "scale", "robot") else 0.0
         ext = np.concatenate((self.hist, x))
         s = self._shift(ext, n, r)
         self.hist = ext[-self.L:]
@@ -381,7 +384,8 @@ class Tuner:
 
     def _shift(self, ext, n, r):
         out = np.zeros(n)
-        L, X, D0 = self.L, self.X, self.DMIN
+        L, X, Dp = self.L, self.X, self.DMIN
+        D0 = Dp + self.extra             # 讀取頭的「工作範圍」下緣（壓平模式會多留一點）
         dr = r - 1.0
         i = 0
         while i < n:
@@ -397,9 +401,9 @@ class Tuner:
                 m = min(n - i, j)
                 if m > 0:
                     k = np.arange(m)
-                    d = np.maximum(D0, self.da - dr * k)
+                    d = np.maximum(Dp, self.da - dr * k)
                     out[i:i + m] = self._read(ext, L + i + k - d)
-                    self.da = max(D0, self.da - dr * m)
+                    self.da = max(Dp, self.da - dr * m)
                     i += m
                 if i < n:
                     self._splice(ext, L + i, r)
@@ -411,12 +415,12 @@ class Tuner:
                 q = self.xk
                 gin = q * eg + (1 - q) * np.sin(0.5 * np.pi * t)
                 gout = q * (1 - eg) + (1 - q) * np.cos(0.5 * np.pi * t)
-                da = np.maximum(D0, self.da - dr * k)
-                db = self.db - dr * k
+                da = np.maximum(Dp, self.da - dr * k)
+                db = np.maximum(Dp, self.db - dr * k)
                 pos = L + i + k
                 out[i:i + m] = gout * self._read(ext, pos - da) + gin * self._read(ext, pos - db)
                 self.prog += m
-                self.da = max(D0, self.da - dr * m)
+                self.da = max(Dp, self.da - dr * m)
                 self.db -= dr * m
                 i += m
                 if self.prog >= X:

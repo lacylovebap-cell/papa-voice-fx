@@ -140,6 +140,7 @@ struct Tuner {
     static constexpr double DMIN = 3.0;
     static const int JFLOOR = 96;
     static const int SHIFT_LAT = 120;   // 變調平均延遲估計（樣本）
+    static const int LOOKAHEAD = 360;   // 壓平音高的模式（電音、機器人）多等 7.5 ms，讓音高判斷跟上
     double sr, srD;
     int W;
     TunerParams p;
@@ -385,6 +386,8 @@ struct Tuner {
         }
         double r = std::pow(2.0, (cur + vt) / 12.0);
         double dr = r - 1.0;
+        bool flat_mode = p.mode != M_OFF && p.mode != M_NATURAL;
+        const double D0 = DMIN + (flat_mode ? LOOKAHEAD : 0);   // 讀取頭工作範圍下緣
         for (int i = 0; i < n; i++) {
             double xi = x[i];
             hist[w] = xi;
@@ -392,8 +395,8 @@ struct Tuner {
             wet = wet_t + (wet - wet_t) * 0.997;
             if (!fading) {
                 bool trig = false;
-                if (dr > 1e-9) trig = da <= DMIN + X * dr;
-                else if (dr < -1e-9) trig = da >= DMIN + jmin(r) + SEARCH + 2;
+                if (dr > 1e-9) trig = da <= D0 + X * dr;
+                else if (dr < -1e-9) trig = da >= D0 + jmin(r) + SEARCH + 2;
                 if (trig) splice(r);
             }
             double s;
@@ -405,7 +408,7 @@ struct Tuner {
                 s = gout * hread(da) + gin * hread(db);
                 prog++;
                 da = std::max(DMIN, da - dr);
-                db -= dr;
+                db = std::max(DMIN, db - dr);
                 if (prog >= X) { da = db; fading = false; }
             } else {
                 s = hread(da);

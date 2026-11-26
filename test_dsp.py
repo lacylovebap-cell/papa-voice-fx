@@ -207,6 +207,20 @@ for kw in (dict(card=True), dict(card=True, mode="chrom"), dict(card=True, mode=
     w, sp = worst_click(**kw)
     check("接合時不會啵（%s）" % "＋".join("%s=%s" % kv for kv in kw.items()), w < -45 and sp > 5, "最差 %.0f dB，接合 %d 次" % (w, sp))
 
+# 說話 ↔ 電音 來回切換（讀取頭工作範圍會改變）也不能啵
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, card=True)
+xx = melody(np.arange(SR * 3) / SR).astype(np.float32)
+outs = []
+for k, s0 in enumerate(range(0, len(xx) // 256 * 256, 256)):
+    if k % 40 == 0:
+        fx.set(mode="electro" if (k // 40) % 2 else "off")
+    outs.append(fx.process(xx[s0:s0 + 256]))
+o = np.concatenate(outs).astype(np.float64)
+hp = sosfilt(butter(6, 5000, "hp", fs=SR, output="sos"), o)
+e = np.sqrt(np.mean(hp[:len(hp) // 240 * 240].reshape(-1, 240) ** 2, 1))[20:]
+w = 20 * np.log10(e.max() / np.sqrt(np.mean(o[SR // 2:] ** 2)) + 1e-12)
+check("說話 ↔ 電音 來回切換不會啵", w < -45, "最差 %.0f dB" % w)
+
 # ---------- 說話時（音高一直滑動）不能有細微電音／金屬感
 def speechlike(sec=3.0, scale=1.0, seed=1):
     rg = np.random.default_rng(seed)

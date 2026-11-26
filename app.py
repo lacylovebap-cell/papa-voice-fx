@@ -7,7 +7,7 @@ import json
 import os
 import traceback
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 import os as _os
 try:
@@ -18,23 +18,86 @@ try:
 except Exception:
     import engine                           # 相容用的 Python 引擎
     NATIVE = False
-from dsp import note_name, KEY_NAMES, VOICE_COLORS
+from dsp import note_name, KEY_NAMES, VOICE_COLORS, REVERB_TYPES, REVERB_NAMES
+import mixer
 
 APP = "PaPaVoiceFx"
 NONE = "（不使用）"
 
 # 效果：再按一次同一顆＝關閉。聲卡變音是獨立的鎖，不受效果影響。
-NEUTRAL = dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
 PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 自然修音", "electro": "⚡ 電音", "phone": "📞 電話", "machine": "📼 答錄機", "robot": "🤖 機器人"}
-PRESETS = {
-    "talk": dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, eq_lo=0, eq_mid=2, eq_hi=2),
-    "sing": dict(robot_fx=0, electro_fx=0, mode="natural", phone=0, machine=0, strength=85, speed=10, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=2),
-    "electro": dict(robot_fx=0, electro_fx=0, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
-    "phone": dict(robot_fx=0, electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
-    "machine": dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
-    # 機器人：音高固定（不跟著唱）＋環形調變＋金屬共鳴
-    "robot": dict(robot_fx=100, electro_fx=0, mode="robot", phone=0, machine=0, strength=100, speed=0, shift=0, comp=55, eq_lo=0, eq_mid=2, eq_hi=1),
+HOTKEYS = {"talk": "1", "sing": "2", "electro": "3", "phone": "4", "machine": "5", "robot": "7"}
+
+# 電音風格（名稱: 修正速度 ms, Flex-Tune, Humanize, 雙重唱亮度, 金屬共鳴），由弱到強
+EL_STYLES = {
+    "微電": (10, 5, 10, 0, 0),
+    "電音": (0, 0, 0, 0, 0),
+    "強電": (0, 0, 0, 50, 50),
+    "爆電（最強）": (0, 0, 0, 90, 100),
 }
+STYLE_KEYS = ("retune", "flex", "humanize", "electro_fx", "metal", "vibrato")
+# Auto-Tune 參考預設（修正速度 ms, Flex-Tune, Humanize, 自然顫音 dB）
+AT_REFS = {
+    "自然修音（80／30／80）": (80, 30, 80, 0),
+    "通用型（50／25／50）": (50, 25, 50, 0),
+    "流行網感（35／25／80）": (35, 25, 80, 0),
+    "R&B 絲滑（20／20／20）": (20, 20, 20, 0),
+    "說唱電感（10／5／10）": (10, 5, 10, 0),
+    "電鰻（0／0／0）": (0, 0, 0, 0),
+}
+# 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
+NATURAL = (60, 20, 100)
+
+# 效果的所有參數（都能在混音台用旋鈕細調）
+FX_BASE = dict(mode="off", phone=0, machine=0, robot_fx=0, electro_fx=0, strength=100, retune=0, flex=0, humanize=0,
+               vibrato=0.0, metal=0, robot_note=57, phone_dist=25, shift=0.0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
+NEUTRAL = dict(FX_BASE)
+
+
+def _style_vals(st):
+    r, f, h, e, m = EL_STYLES.get(st, EL_STYLES["電音"])
+    return dict(retune=r, flex=f, humanize=h, electro_fx=e, metal=m, vibrato=0.0)
+
+
+PRESETS = {
+    "talk": {**FX_BASE, "comp": 45, "eq_mid": 2, "eq_hi": 2},
+    "sing": {**FX_BASE, "mode": "natural", "retune": NATURAL[0], "flex": NATURAL[1], "humanize": NATURAL[2],
+             "eq_lo": 1, "eq_mid": 1, "eq_hi": 2},
+    "electro": {**FX_BASE, "mode": "electro", "comp": 50, "eq_mid": 1, "eq_hi": 2, **_style_vals("電音")},
+    "phone": {**FX_BASE, "phone": 1, "comp": 60},
+    "machine": {**FX_BASE, "machine": 1, "comp": 60},
+    # 機器人：音高固定（不跟著唱）＋環形調變＋金屬共鳴
+    "robot": {**FX_BASE, "mode": "robot", "robot_fx": 100, "metal": 60, "comp": 55, "eq_mid": 2, "eq_hi": 1},
+}
+
+# 參數：名稱、最小、最大、顯示格式、一格的大小
+PARAM_SPEC = {
+    "retune": ("修正速度", 0, 400, "{:.0f} ms", 1),
+    "flex": ("Flex-Tune", 0, 100, "{:.0f}", 1),
+    "humanize": ("Humanize", 0, 100, "{:.0f}", 1),
+    "vibrato": ("自然顫音", -12, 12, "{:+.1f} dB", 0.5),
+    "strength": ("修正強度", 0, 100, "{:.0f}%", 1),
+    "electro_fx": ("雙重唱亮度", 0, 100, "{:.0f}%", 1),
+    "metal": ("金屬共鳴", 0, 100, "{:.0f}%", 1),
+    "robot_fx": ("機械感", 0, 100, "{:.0f}%", 1),
+    "robot_note": ("機器人音高", 45, 72, lambda v: note_name(v), 1),
+    "phone_dist": ("破音感", 0, 100, "{:.0f}%", 1),
+    "shift": ("升降調", -12, 12, "{:+.1f} 半音", 0.5),
+    "comp": ("壓縮", 0, 100, "{:.0f}%", 1),
+    "eq_lo": ("低音", -12, 12, "{:+.1f} dB", 0.5),
+    "eq_mid": ("中音", -12, 12, "{:+.1f} dB", 0.5),
+    "eq_hi": ("高音", -12, 12, "{:+.1f} dB", 0.5),
+}
+_COMMON = ["shift", "comp", "eq_lo", "eq_mid", "eq_hi"]
+EDIT_KEYS = {
+    "talk": _COMMON,
+    "sing": ["retune", "flex", "humanize", "vibrato", "strength"] + _COMMON,
+    "electro": ["retune", "flex", "humanize", "vibrato", "electro_fx", "metal"] + _COMMON,
+    "phone": ["phone_dist"] + _COMMON,
+    "machine": _COMMON,
+    "robot": ["robot_note", "robot_fx", "metal", "comp", "eq_lo", "eq_mid", "eq_hi"],
+}
+RV_FIELDS = ("type", "mix", "size", "bright", "pre", "width", "lowcut")
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
 
@@ -89,18 +152,6 @@ def log_error(text):
         pass
 
 
-# 電音風格（參數來自 Auto-Tune 常用設定：修正速度 ms、Flex-Tune、Humanize、電音質感）
-EL_STYLES = {
-    # 名稱: (修正速度 ms, Flex-Tune, Humanize, 雙重唱亮度, 金屬共鳴)，由弱到強
-    "微電": (10, 5, 10, 0, 0),
-    "電音": (0, 0, 0, 0, 0),
-    "強電": (0, 0, 0, 50, 50),
-    "爆電（最強）": (0, 0, 0, 90, 100),
-}
-# 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
-NATURAL = (60, 20, 100)
-
-
 class Wave(tk.Canvas):
     """會跳動的聲音波形：最近約 3 秒的音量。整條用一條線畫，很省電腦資源（不會搶走處理聲音的時間）。"""
 
@@ -138,6 +189,8 @@ class App:
         self.in_map, self.out_map = {}, {}
         self._save_job = None
         self._play_which = None
+        self._play_take = None
+        self._replay_job = None
         self.active_preset = None
         self._init_vars()
         self._build()
@@ -194,16 +247,54 @@ class App:
         self.block_now = 128 if NATIVE else 256
         self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
-        self.verb = self.var("verb", 15, D)
+        # 混響 A／B／C：全部效果共用（切換效果不會改變）
+        self.rv = []
+        old_v = self.settings.get("verb") if ("rv1_type" not in self.settings) else None
+        for i in range(3):
+            t0 = "經典" if i == 0 else "關"
+            d = self.reverb_type_defaults("經典" if i == 0 else ("大廳" if i == 1 else "人聲板"))
+            mix0 = 15 if i == 0 else 30
+            if i == 0 and old_v is not None:        # 舊版的單一混響 → 第 1 層「經典」，聲音一樣
+                mix0 = float(old_v)
+                d["size"] = ((0.80 + 0.13 * mix0 / 100) - 0.75) / 0.22 * 100
+            elif i == 0:
+                d["size"] = ((0.80 + 0.13 * 0.15) - 0.75) / 0.22 * 100
+            r = {"type": self.var("rv%d_type" % (i + 1), t0)}
+            if r["type"].get() not in ["關"] + REVERB_NAMES:
+                r["type"].set(t0)
+            r["mix"] = self.var("rv%d_mix" % (i + 1), mix0, D)
+            for k in ("size", "bright", "pre", "width", "lowcut"):
+                r[k] = self.var("rv%d_%s" % (i + 1, k), d[k], D)
+            self.rv.append(r)
+        self.reverb_names = list(REVERB_NAMES)
         self.deess = self.var("deess", 40, D)
         self.g_dry = self.var("g_dry", 0, D)
         self.el_style = self.var("el_style3", "電音")
         if self.el_style.get() not in EL_STYLES:
             self.el_style.set("電音")
+        self._style_applied = self.el_style.get()
         self.color = tk.StringVar(value="原本")   # 音色跟著效果走（不另外選）
-        # 效果內部參數（不顯示在畫面上，由效果按鈕設定）
+        # 效果的即時參數（由效果按鈕＋細調決定）
+        self.fxv = {}
         for k, v in NEUTRAL.items():
-            setattr(self, k, self.var(k, v, tk.StringVar if k == "mode" else D, remember=False))
+            var = self.var(k, v, tk.StringVar if k == "mode" else D, remember=False)
+            self.fxv[k] = var
+            setattr(self, k, var)
+        # 每個效果的細調（只存和預設不同的），會記住
+        self.fx_tweaks_var = self.var("fx_tweaks", "{}")
+        try:
+            self.fx_tweaks = json.loads(self.fx_tweaks_var.get()) or {}
+        except Exception:
+            self.fx_tweaks = {}
+        # 我的設定（自己取名字的存檔）
+        self.scenes_var = self.var("scenes", "{}")
+        try:
+            self.scenes = json.loads(self.scenes_var.get()) or {}
+        except Exception:
+            self.scenes = {}
+        self.current_scene = None
+        self.preset_names = PRESET_NAMES
+        self.param_spec = PARAM_SPEC
 
     # ------------------------------------------------------------ 介面
     def label(self, parent, text, size=10, color=C_TXT, bold=False, **kw):
@@ -219,8 +310,19 @@ class App:
             st.theme_use("clam")
         except Exception:
             pass
+        st.configure("TNotebook", background=C_BG, borderwidth=0)
+        st.configure("TNotebook.Tab", background="#2e2944", foreground=C_TXT, padding=(16, 5), font=(FONT, 11, "bold"))
+        st.map("TNotebook.Tab", background=[("selected", C_PINK)], foreground=[("selected", "#2a0a1a")])
+        # ---- 最上面：我的設定（自己取名字的存檔，一鍵切換）
+        self.scene_bar = tk.Frame(self.root, bg="#0e0c16", padx=10, pady=6)
+        self.scene_bar.pack(fill="x")
+        # ---- 兩頁：簡單／混音台
+        self.nb = ttk.Notebook(self.root)
+        self.nb.pack(fill="both", expand=True)
+        page1 = tk.Frame(self.nb, bg=C_BG)
+        self.nb.add(page1, text="🏠 簡單")
         # 整個畫面可以用滑鼠滾輪上下捲動（螢幕比較矮時也看得到全部）
-        outer = tk.Frame(self.root, bg=C_BG)
+        outer = tk.Frame(page1, bg=C_BG)
         outer.pack(fill="both", expand=True)
         canvas = tk.Canvas(outer, bg=C_BG, highlightthickness=0)
         sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
@@ -236,7 +338,7 @@ class App:
         self.wrap = wrap
         # 視窗大小：不超過螢幕高度
         sh = self.root.winfo_screenheight()
-        self.root.geometry("1000x%d" % max(500, min(900, sh - 80)))
+        self.root.geometry("1040x%d" % max(500, min(920, sh - 80)))
 
         # ---- 頂部：開始＋聲卡變音
         top = tk.Frame(wrap, bg=C_BG)
@@ -278,6 +380,20 @@ class App:
         self.btn_bgm = self.button(bgmrow, "", self.toggle_bgm, size=10)
         self.btn_bgm.pack(side="left")
         self.button(bgmrow, "❓ 伴奏怎麼接", lambda: messagebox.showinfo("伴奏怎麼接", BGM_HELP), size=10).pack(side="left", padx=8)
+        # 伴奏對齊：直播裡人聲和伴奏沒貼齊時調這裡
+        al = tk.Frame(box, bg=C_CARD)
+        al.grid(row=6, column=1, columnspan=4, sticky="w", pady=(6, 0))
+        self.label(al, "⏱ 伴奏對齊", 10, C_TXT, True).pack(side="left")
+        self.label(al, "伴奏提早", 9, C_SUB).pack(side="left", padx=(8, 2))
+        ttk.Scale(al, from_=-150, to=150, variable=self.bgm_trim, orient="horizontal", length=200,
+                  command=lambda v: self.on_trim()).pack(side="left")
+        self.label(al, "伴奏延後", 9, C_SUB).pack(side="left", padx=(2, 6))
+        vl = self.label(al, "", 9, C_SUB, width=7)
+        vl.pack(side="left")
+        self.bgm_trim._fmt = (vl, "{:+.0f} ms")
+        self.button(al, "↺", lambda: (self.bgm_trim.set(0), self.on_trim()), size=9).pack(side="left", padx=4)
+        self.label(box, "對齊方法：錄一段 → 播放 → 邊聽邊拉（播放中會即時改變）。人聲比伴奏慢＝往右，人聲比伴奏快＝往左。",
+                   9, C_SUB, anchor="w").grid(row=7, column=1, columnspan=4, sticky="w")
 
         # ---- 效果
         fx = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
@@ -287,29 +403,57 @@ class App:
         row = tk.Frame(fx, bg=C_CARD)
         row.pack(fill="x")
         self.preset_btns = {}
-        self.btn_none = self.button(row, "✋ 無效果", self.clear_fx, size=12)
-        self.btn_none.pack(side="left", expand=True, fill="x", padx=3)
+        self.preset_hk = {}
+
+        def fx_button(txt, cmd, hk):
+            cell = tk.Frame(row, bg=C_CARD)
+            cell.pack(side="left", expand=True, fill="x", padx=3)
+            lab = self.label(cell, "Ctrl+Alt+" + hk, 8, C_SUB)
+            lab.pack()
+            b = self.button(cell, txt, cmd, size=10)
+            b.config(pady=4, padx=6)
+            b.pack(fill="x")
+            return b, lab
+        self.btn_none, self.none_hk = fx_button("✋ 無效果", self.clear_fx, "0")
         for key, txt in PRESET_NAMES.items():
-            b = self.button(row, txt, lambda k=key: self.preset(k), size=12)
-            b.pack(side="left", expand=True, fill="x", padx=3)
+            b, lab = fx_button(txt, lambda k=key: self.preset(k), HOTKEYS[key])
             self.preset_btns[key] = b
-        # 混響、去齒音：固定一個值，切換任何效果都不會跑掉
+            self.preset_hk[key] = lab
+        cell = tk.Frame(row, bg=C_CARD)
+        cell.pack(side="left", padx=(8, 3))
+        self.label(cell, "每個都能調", 8, C_SUB).pack()
+        tb = self.button(cell, "🎛 細調", lambda: self.open_mixer("fx"), color="#3a2f5c", size=10)
+        tb.config(pady=4, padx=6)
+        tb.pack(fill="x")
+        # 混響 A／B／C、去齒音：和效果完全分開，切換任何效果都不會跑掉，按效果也不會自己加混響
         fixed = tk.Frame(fx, bg=C_CARD)
         fixed.pack(fill="x", pady=(10, 0))
-        for col, (txt, v) in enumerate((("🌫 混響", self.verb), ("🦷 去齒音", self.deess))):
-            self.label(fixed, txt, 11, C_TXT, True).grid(row=0, column=col * 3, sticky="w", padx=(0 if col == 0 else 24, 6))
-            ttk.Scale(fixed, from_=0, to=100, variable=v, orient="horizontal", length=170,
-                      command=lambda _v: self.apply()).grid(row=0, column=col * 3 + 1)
+        for i in range(3):
+            self.label(fixed, "🌫 混響 " + "ABC"[i], 11, C_TXT, True).grid(row=i, column=0, sticky="w", pady=1)
+            cb = ttk.Combobox(fixed, textvariable=self.rv[i]["type"], values=["關"] + REVERB_NAMES, state="readonly", width=7)
+            cb.grid(row=i, column=1, padx=6)
+            cb.bind("<<ComboboxSelected>>", lambda e, k=i: self.on_reverb_type(k))
+            self.label(fixed, "深度", 9, C_SUB).grid(row=i, column=2)
+            ttk.Scale(fixed, from_=0, to=100, variable=self.rv[i]["mix"], orient="horizontal", length=170,
+                      command=lambda _v: self.apply()).grid(row=i, column=3, padx=4)
             vl = self.label(fixed, "", 10, C_SUB, width=5)
-            vl.grid(row=0, column=col * 3 + 2)
-            v._fmt = (vl, "{:.0f}%")
-        self.label(fx, "↑ 混響和去齒音是固定的，切換任何效果都會沿用。", 9, C_SUB, anchor="w").pack(fill="x")
+            vl.grid(row=i, column=4)
+            self.rv[i]["mix"]._fmt = (vl, "{:.0f}%")
+            self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=9).grid(row=i, column=5, padx=4)
+        self.label(fixed, "🦷 去齒音", 11, C_TXT, True).grid(row=0, column=6, sticky="w", padx=(24, 6))
+        ttk.Scale(fixed, from_=0, to=100, variable=self.deess, orient="horizontal", length=140,
+                  command=lambda _v: self.apply()).grid(row=0, column=7)
+        vl = self.label(fixed, "", 10, C_SUB, width=5)
+        vl.grid(row=0, column=8)
+        self.deess._fmt = (vl, "{:.0f}%")
+        self.label(fx, "↑ 混響和去齒音所有效果共用：你拉多少就是多少，切換效果不會變；深度拉到 0＝沒有混響。⚙＝更多細調（殘響長度、明亮度、立體寬度…）",
+                   9, C_SUB, anchor="w", justify="left", wraplength=900).pack(fill="x")
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
         self.label(el, "電音風格：", 10).pack(side="left")
         c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="disabled", width=14)
         c1.pack(side="left")
-        c1.bind("<<ComboboxSelected>>", lambda e: self.apply())
+        c1.bind("<<ComboboxSelected>>", lambda e: self.on_style())
         self.cb_style = c1
         self.style_hint = self.label(el, "（先按「⚡ 電音」才能選）", 9, C_SUB)
         self.style_hint.pack(side="left", padx=6)
@@ -350,14 +494,18 @@ class App:
         tk.Checkbutton(self.adv, text="專屬模式：開機自動開「變聲」，關掉前會再確認（怕怕專用，其他歌手不用勾）",
                        variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor="#13111c",
                        activebackground=C_CARD, font=(FONT, 10)).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self._slider(self.adv, 1, "直播對齊微調（人聲搶拍往右、拖拍往左）", self.bgm_trim, -80, 80, "{:+.0f} ms")
         self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
         self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
         self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：1 說話　2 修音　3 電音　4 電話　5 答錄機　7 機器人　6 變聲　B 伴奏　R 錄音",
+        self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：0 無效果　1 說話　2 修音　3 電音　4 電話　5 答錄機　7 機器人　6 變聲　B 伴奏　R 錄音　F1～F8 我的設定",
                                9, C_SUB, anchor="w")
         self.hint.pack(fill="x", pady=(8, 0))
+        # ---- 第二頁：混音台
+        self.mixer = mixer.MixerPage(self.nb, self)
+        self.nb.add(self.mixer, text="🎛 混音台（細調）")
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
+        self.refresh_scene_bar()
 
     def _row(self, box, r, name, dev_var, gain_var, gmax, color, key):
         self.label(box, name, 11, C_TXT, True, width=8, anchor="w").grid(row=r, column=0, sticky="w", pady=3)
@@ -483,28 +631,28 @@ class App:
             fm = getattr(v, "_fmt", None)
             if fm:
                 fm[0].config(text=fm[1].format(v.get()))
-        mode = self.mode.get()
-        strength = float(self.strength.get()) / 100
-        speed = float(self.speed.get()) / 100
-        flex = humanize = metal = 0.0
-        electro_fx = float(self.electro_fx.get()) / 100
-        if self.active_preset == "electro":
-            ms, fl, hu, efx, mt = EL_STYLES[self.el_style.get()]
-            strength, speed, flex, humanize, electro_fx, metal = 1.0, ms / 400, fl / 100, hu / 100, efx / 100, mt / 100
-        elif self.active_preset == "robot":
-            metal = 0.6
-        elif self.active_preset == "sing":
-            ms, fl, hu = NATURAL
-            strength, speed, flex, humanize = 1.0, ms / 400, fl / 100, hu / 100
+        # 電音風格換了 → 載入那個風格的旋鈕值
+        if self.active_preset == "electro" and self.el_style.get() != self._style_applied:
+            self._load_style()
+        g = lambda k: float(self.fxv[k].get())
         color = "人聲修飾" if self.active_preset in ("sing", "electro") else "原本"
-        kw = dict(flex=flex, humanize=humanize, color=color, metal=metal, robot_fx=float(self.robot_fx.get()) / 100,
-            mode=mode, key=0, scale="major", strength=strength, speed=speed,
-            shift=float(self.shift.get()), robot=57,
-            phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
-            eq_lo=float(self.eq_lo.get()), eq_mid=float(self.eq_mid.get()), eq_hi=float(self.eq_hi.get()),
-            comp=float(self.comp.get()) / 100, verb=float(self.verb.get()) / 100,
-            card=bool(self.card.get()), electro_fx=electro_fx, deess=float(self.deess.get()) / 100,
-        )
+        kw = dict(color=color, mode=self.fxv["mode"].get(), key=0, scale="major",
+                  strength=g("strength") / 100, speed=g("retune") / 400, flex=g("flex") / 100,
+                  humanize=g("humanize") / 100, vibrato=g("vibrato"), shift=g("shift"), robot=g("robot_note"),
+                  metal=g("metal") / 100, robot_fx=g("robot_fx") / 100,
+                  phone=bool(g("phone")), phone_dist=g("phone_dist") / 100, machine=bool(g("machine")),
+                  eq_lo=g("eq_lo"), eq_mid=g("eq_mid"), eq_hi=g("eq_hi"), comp=g("comp") / 100,
+                  card=bool(self.card.get()), electro_fx=g("electro_fx") / 100, deess=float(self.deess.get()) / 100)
+        for i, r in enumerate(self.rv):
+            t = r["type"].get()
+            n = "rv%d_" % (i + 1)
+            kw[n + "type"] = (REVERB_NAMES.index(t) + 1) if t in REVERB_NAMES else 0
+            kw[n + "mix"] = float(r["mix"].get()) / 100 if t in REVERB_NAMES else 0.0
+            kw[n + "size"] = float(r["size"].get()) / 100
+            kw[n + "bright"] = float(r["bright"].get()) / 100
+            kw[n + "pre"] = float(r["pre"].get())
+            kw[n + "width"] = float(r["width"].get()) / 100
+            kw[n + "lowcut"] = float(r["lowcut"].get())
         self.eng.set_params(**kw)
         for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm)):
             self.eng.set_gain(name, float(v.get()) / 100)
@@ -512,26 +660,277 @@ class App:
         self.eng.bgm_trim_ms = float(self.bgm_trim.get())
         if hasattr(self, "btn_card"):
             self.refresh_buttons()
+        if hasattr(self, "mixer"):
+            self.mixer.refresh()
         self.schedule_save()
 
-    def preset(self, name):
-        """效果：再按一次同一顆＝關閉（聲卡變音不受影響）。"""
-        p = NEUTRAL if self.active_preset == name else PRESETS[name]
-        for k, v in p.items():
-            getattr(self, k).set(v)
-        self.active_preset = None if p is NEUTRAL else name
+    # ---- 效果與細調
+    def edit_keys(self, p):
+        return EDIT_KEYS[p]
+
+    def fx_default(self, p, key):
+        d = dict(PRESETS[p])
+        if p == "electro":
+            d.update(_style_vals(self.el_style.get()))
+        return d[key]
+
+    def fx_values(self, p):
+        d = dict(PRESETS[p])
+        if p == "electro":
+            d.update(_style_vals(self.el_style.get()))
+        d.update(self.fx_tweaks.get(p, {}))
+        return d
+
+    def _store_tweaks(self):
+        self.fx_tweaks_var.set(json.dumps(self.fx_tweaks, ensure_ascii=False))
+
+    def on_tweak(self, key):
+        """旋鈕轉動：記到目前效果的細調裡。"""
+        p = self.active_preset
+        if p is None:
+            return
+        v = float(self.fxv[key].get())
+        tw = self.fx_tweaks.setdefault(p, {})
+        if abs(v - float(self.fx_default(p, key))) < 1e-9:
+            tw.pop(key, None)
+        else:
+            tw[key] = v
+        if not tw:
+            self.fx_tweaks.pop(p, None)
+        self._store_tweaks()
         self.apply()
+
+    def reset_tweaks(self, p):
+        self.fx_tweaks.pop(p, None)
+        self._store_tweaks()
+        if self.active_preset == p:
+            for k, v in self.fx_values(p).items():
+                self.fxv[k].set(v)
+        self.apply()
+
+    def ref_presets(self, p):
+        return (list(EL_STYLES) + list(AT_REFS)) if p == "electro" else list(AT_REFS)
+
+    def apply_ref_preset(self, p, name):
+        if name in EL_STYLES:
+            vals = _style_vals(name)
+        elif name in AT_REFS:
+            r, f, h, vb = AT_REFS[name]
+            vals = dict(retune=r, flex=f, humanize=h, vibrato=vb)
+            if p == "electro":
+                vals.update(electro_fx=0, metal=0)
+        else:
+            return
+        tw = self.fx_tweaks.setdefault(p, {})
+        for k, v in vals.items():
+            if abs(v - float(self.fx_default(p, k))) < 1e-9:
+                tw.pop(k, None)
+            else:
+                tw[k] = v
+        if not tw:
+            self.fx_tweaks.pop(p, None)
+        self._store_tweaks()
+        if self.active_preset == p:
+            for k, v in self.fx_values(p).items():
+                self.fxv[k].set(v)
+        self.apply()
+
+    def on_style(self):
+        self._load_style()
+        self.apply()
+
+    def _load_style(self):
+        """選了電音風格：風格相關的旋鈕回到該風格的值（EQ、壓縮的細調保留）。"""
+        self._style_applied = self.el_style.get()
+        tw = self.fx_tweaks.get("electro", {})
+        for k in STYLE_KEYS:
+            tw.pop(k, None)
+        if not tw:
+            self.fx_tweaks.pop("electro", None)
+        self._store_tweaks()
+        if self.active_preset == "electro":
+            for k, v in self.fx_values("electro").items():
+                self.fxv[k].set(v)
+        self._mixer_fx_changed()
+
+    def preset(self, name):
+        """效果：再按一次同一顆＝關閉（聲卡變音不受影響）。混響不受效果影響。"""
+        if self.active_preset == name:
+            vals, self.active_preset = NEUTRAL, None
+        else:
+            vals, self.active_preset = self.fx_values(name), name
+            if name == "electro":
+                self._style_applied = self.el_style.get()
+        for k, v in vals.items():
+            self.fxv[k].set(v)
+        self.apply()
+        self._mixer_fx_changed()
 
     def clear_fx(self):
         for k, v in NEUTRAL.items():
-            getattr(self, k).set(v)
+            self.fxv[k].set(v)
         self.active_preset = None
         self.apply()
+        self._mixer_fx_changed()
 
     def set_mode(self, val):
         self.mode.set("off" if self.mode.get() == val else val)
         self.active_preset = None
         self.apply()
+
+    def _mixer_fx_changed(self):
+        """效果換了：混音台正在看效果編輯器的話更新它（沒在看就等切過去再更新）。"""
+        if not hasattr(self, "mixer") or not self.mixer.editing or self.mixer.editing[0] != "fx":
+            return
+        if str(self.nb.select()) == str(self.mixer):
+            self.mixer.open_editor("fx")
+        else:
+            self.mixer.dirty = True
+
+    def _on_tab(self, e=None):
+        if hasattr(self, "mixer") and str(self.nb.select()) == str(self.mixer) and getattr(self.mixer, "dirty", False):
+            self.mixer.dirty = False
+            self.mixer.open_editor(*self.mixer.editing)
+
+    def open_mixer(self, kind="fx", idx=None):
+        self.nb.select(self.mixer)
+        self.mixer.open_editor(kind, idx)
+
+    # ---- 混響
+    def reverb_type_defaults(self, name):
+        sc, size, bright, pre, width, lowcut = REVERB_TYPES.get(name, REVERB_TYPES["經典"])
+        return dict(size=size * 100, bright=bright * 100, pre=pre, width=width * 100, lowcut=lowcut)
+
+    def on_reverb_type(self, i):
+        """換混響類型：其他旋鈕回到這個類型的建議值；深度保留（原本是 0 就給 30%）。"""
+        r = self.rv[i]
+        t = r["type"].get()
+        if t in REVERB_NAMES:
+            for k, v in self.reverb_type_defaults(t).items():
+                r[k].set(round(v, 1))
+            if float(r["mix"].get()) <= 0.5:
+                r["mix"].set(30)
+        self.apply()
+        if hasattr(self, "mixer") and self.mixer.editing == ("rv", i):
+            self.mixer.open_editor("rv", i)
+
+    # ---- 我的設定（自己取名字的存檔）
+    def scene_snapshot(self):
+        return dict(active=self.active_preset, el_style=self.el_style.get(),
+                    tweaks=json.loads(json.dumps(self.fx_tweaks)),
+                    reverb=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv],
+                    deess=float(self.deess.get()))
+
+    def _store_scenes(self):
+        self.scenes_var.set(json.dumps(self.scenes, ensure_ascii=False))
+        self.schedule_save()
+
+    def save_scene(self, name=None):
+        if name is None:
+            name = simpledialog.askstring("存成我的設定", "幫目前這組聲音取個名字（例如：怕怕專屬一、怕怕說唱）：\n"
+                                          "會存：效果、所有細調、混響、去齒音（不會動到變聲開關和音量）", parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()[:20]
+        if name in self.scenes and not messagebox.askyesno("已經有這個名字", "「%s」已經存在，要用目前的設定覆蓋嗎？" % name):
+            return
+        self.scenes[name] = self.scene_snapshot()
+        self.current_scene = name
+        self._store_scenes()
+        self.refresh_scene_bar()
+        self.msg.config(text="已存成「%s」，之後按上面的按鈕就能一鍵切回來。" % name, fg=C_SUB)
+
+    def load_scene(self, name):
+        s = self.scenes.get(name)
+        if not s:
+            return
+        self.fx_tweaks = json.loads(json.dumps(s.get("tweaks", {})))
+        self._store_tweaks()
+        st = s.get("el_style", "電音")
+        self.el_style.set(st if st in EL_STYLES else "電音")
+        self._style_applied = self.el_style.get()
+        for i, rr in enumerate(s.get("reverb", [])[:3]):
+            for k in RV_FIELDS:
+                if k in rr:
+                    self.rv[i][k].set(rr[k])
+        self.deess.set(s.get("deess", self.deess.get()))
+        act = s.get("active")
+        if act in PRESETS:
+            self.active_preset = None
+            self.preset(act)
+        else:
+            self.clear_fx()
+        self.current_scene = name
+        self.refresh_scene_bar()
+        if hasattr(self, "mixer") and self.mixer.editing and self.mixer.editing[0] == "rv":
+            self.mixer.open_editor("rv", self.mixer.editing[1])
+        self.msg.config(text="已切換到「%s」。" % name, fg=C_SUB)
+
+    def load_scene_index(self, i):
+        names = list(self.scenes)
+        if i < len(names):
+            self.load_scene(names[i])
+
+    def rename_scene(self, name):
+        new = simpledialog.askstring("改名", "「%s」要改成什麼名字？" % name, initialvalue=name, parent=self.root)
+        if not new or not new.strip() or new.strip() == name:
+            return
+        new = new.strip()[:20]
+        if new in self.scenes:
+            messagebox.showinfo("改名", "已經有「%s」了。" % new)
+            return
+        self.scenes = {(new if k == name else k): v for k, v in self.scenes.items()}
+        if self.current_scene == name:
+            self.current_scene = new
+        self._store_scenes()
+        self.refresh_scene_bar()
+
+    def delete_scene(self, name):
+        if not messagebox.askyesno("刪除", "確定要刪除「%s」嗎？" % name):
+            return
+        self.scenes.pop(name, None)
+        if self.current_scene == name:
+            self.current_scene = None
+        self._store_scenes()
+        self.refresh_scene_bar()
+
+    def scene_menu(self, name, event):
+        m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label="用目前的設定覆蓋「%s」" % name, command=lambda: self._overwrite_scene(name))
+        m.add_command(label="改名", command=lambda: self.rename_scene(name))
+        m.add_command(label="刪除", command=lambda: self.delete_scene(name))
+        try:
+            m.tk_popup(event.x_root, event.y_root)
+        finally:
+            m.grab_release()
+
+    def _overwrite_scene(self, name):
+        self.scenes[name] = self.scene_snapshot()
+        self.current_scene = name
+        self._store_scenes()
+        self.refresh_scene_bar()
+
+    def refresh_scene_bar(self):
+        bar = self.scene_bar
+        for w in bar.winfo_children():
+            w.destroy()
+        tk.Label(bar, text="💾 我的設定：", bg=bar["bg"], fg=C_PINK, font=(FONT, 10, "bold")).pack(side="left")
+        self.scene_btns = {}
+        for n, name in enumerate(self.scenes):
+            on = name == self.current_scene
+            c = C_GREEN if on else C_BTN
+            txt = ("F%d " % (n + 1) if n < 8 else "") + name
+            b = tk.Button(bar, text=txt, command=lambda k=name: self.load_scene(k), bg=c, fg="#0b2216" if on else C_TXT,
+                          activebackground=c, relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2)
+            b.pack(side="left", padx=2)
+            b.bind("<Button-3>", lambda e, k=name: self.scene_menu(k, e))
+            self.scene_btns[name] = b
+        tk.Button(bar, text="＋ 存目前設定", command=self.save_scene, bg="#3a2f5c", fg=C_TXT, activebackground="#3a2f5c",
+                  relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2).pack(side="left", padx=(8, 4))
+        if self.scenes:
+            tk.Label(bar, text="（按一下＝切換；右鍵＝覆蓋／改名／刪除）", bg=bar["bg"], fg=C_SUB, font=(FONT, 9)).pack(side="left")
+        else:
+            tk.Label(bar, text="把現在的效果＋細調＋混響存起來、取名字，之後一鍵切換", bg=bar["bg"], fg=C_SUB, font=(FONT, 9)).pack(side="left")
 
     def on_personal(self):
         if self.personal.get():
@@ -602,9 +1001,11 @@ class App:
             if wet is None or len(wet) == 0:
                 self.rec_label.config(text="沒有錄到聲音")
                 return
+            voice, bgm = self.eng.get_recording("voice"), self.eng.get_recording("bgm")
             self._take_no += 1
             name = "第 %d 段　%s　%.1f 秒" % (self._take_no, datetime.datetime.now().strftime("%H:%M:%S"), secs)
-            self.takes.append(dict(name=name, wet=wet, dry=dry, secs=secs))
+            self.takes.append(dict(name=name, wet=wet, dry=dry, voice=voice, bgm=bgm, secs=secs,
+                                   trim=float(self.bgm_trim.get())))
             if len(self.takes) > 30:                       # 最多暫存 30 段，太舊的自動移除
                 self.takes.pop(0)
             self.refresh_takes(select=len(self.takes) - 1)
@@ -630,10 +1031,30 @@ class App:
             return sel[0]
         return len(self.takes) - 1 if self.takes else None
 
+    def take_mix(self, t):
+        """錄音的直播聲音：如果錄的時候人聲、伴奏有分開存，就照「目前」的伴奏對齊重新混（播放中拉對齊會即時改變）。"""
+        import numpy as np
+        v, b = t.get("voice"), t.get("bgm")
+        if v is None or b is None or len(v) == 0 or len(v) != len(b):
+            return t["wet"]
+        d = int(round((float(self.bgm_trim.get()) - float(t.get("trim", 0.0))) * engine.SR / 1000.0))
+        if d == 0:
+            return t["wet"]
+        n = len(b)
+        if d > 0:
+            b2 = np.concatenate((np.zeros(min(d, n), np.float32), b[:max(0, n - d)]))
+        else:
+            b2 = np.concatenate((b[min(-d, n):], np.zeros(min(-d, n), np.float32)))
+        m = v.astype(np.float32) + b2.astype(np.float32)
+        pk = float(np.max(np.abs(m))) if len(m) else 0.0
+        return m / pk * 0.98 if pk > 0.98 else m
+
     def play(self, which="wet"):
+        import time
         if self.eng.playing:
             self.eng.stop_play()
             self._play_which = None
+            self._play_take = None
             self.refresh_buttons()
             return
         if self.eng.recording:
@@ -642,12 +1063,37 @@ class App:
         if i is None:
             messagebox.showinfo("聽錄音", "還沒有錄音。")
             return
-        if not self.eng.play_array(self.takes[i][which]):
+        data = self.take_mix(self.takes[i]) if which == "wet" else self.takes[i][which]
+        if not self.eng.play_array(data):
             messagebox.showinfo("聽錄音", "請先按「開始」才能在耳機播放。")
             return
         self._play_which = which
-        self.rec_label.config(text="播放中：" + self.takes[i]["name"])
+        self._play_take = (i, time.time(), 0) if which == "wet" else None
+        self.rec_label.config(text="播放中：" + self.takes[i]["name"] + "（可以邊聽邊拉「伴奏對齊」）")
         self.refresh_buttons()
+
+    def on_trim(self):
+        self.apply()
+        if getattr(self, "_play_take", None) is not None and self.eng.playing:
+            if getattr(self, "_replay_job", None):
+                self.root.after_cancel(self._replay_job)
+            self._replay_job = self.root.after(150, self._replay_from_pos)
+
+    def _replay_from_pos(self):
+        """播放中改了對齊：從目前播到的位置，用新的對齊繼續播。"""
+        import time
+        self._replay_job = None
+        pt = getattr(self, "_play_take", None)
+        if pt is None or not self.eng.playing:
+            return
+        i, t0, off = pt
+        if i >= len(self.takes):
+            return
+        pos = off + int((time.time() - t0) * engine.SR)
+        mix = self.take_mix(self.takes[i])
+        if pos < len(mix) - 480:
+            self.eng.play_array(mix[pos:])
+            self._play_take = (i, time.time(), pos)
 
     def delete_take(self):
         i = self.selected_take()
@@ -668,7 +1114,7 @@ class App:
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         d = rec_dir()
         try:
-            write_wav(os.path.join(d, "%s_第%d段_處理後.wav" % (stamp, i + 1)), t["wet"])
+            write_wav(os.path.join(d, "%s_第%d段_處理後.wav" % (stamp, i + 1)), self.take_mix(t))
             write_wav(os.path.join(d, "%s_第%d段_原聲.wav" % (stamp, i + 1)), t["dry"])
         except Exception as e:
             log_error(traceback.format_exc())
@@ -690,10 +1136,11 @@ class App:
         def ui(fn, *a):
             return lambda: self.root.after(0, fn, *a)
 
-        keys = {"talk": "1", "sing": "2", "electro": "3", "phone": "4", "machine": "5", "robot": "7"}
-        hk = {"<ctrl>+<alt>+" + keys[k]: ui(self.preset, k) for k in PRESET_NAMES}
-        hk.update({"<ctrl>+<alt>+6": ui(self.toggle_card), "<ctrl>+<alt>+b": ui(self.toggle_bgm),
-                   "<ctrl>+<alt>+r": ui(self.toggle_rec)})
+        hk = {"<ctrl>+<alt>+" + HOTKEYS[k]: ui(self.preset, k) for k in PRESET_NAMES}
+        hk.update({"<ctrl>+<alt>+0": ui(self.clear_fx), "<ctrl>+<alt>+6": ui(self.toggle_card),
+                   "<ctrl>+<alt>+b": ui(self.toggle_bgm), "<ctrl>+<alt>+r": ui(self.toggle_rec)})
+        for n in range(8):      # F1～F8：我的設定
+            hk["<ctrl>+<alt>+<f%d>" % (n + 1)] = ui(self.load_scene_index, n)
         try:
             self._hk = keyboard.GlobalHotKeys(hk)
             self._hk.daemon = True
@@ -707,6 +1154,11 @@ class App:
         run = e.running
         for k in ("inp", "mon", "out", "bgm"):
             getattr(self, "wave_" + k).push(e.lv[k] if run else 0.0)
+        try:
+            if str(self.nb.select()) == str(self.mixer):
+                self.mixer.push_levels(e.lv, run)
+        except Exception:
+            pass
         if run:
             f, det, tgt = e.info
             if det is not None and e.fx is not None:
@@ -738,6 +1190,7 @@ class App:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))
             if not e.playing and self._play_which is not None:
                 self._play_which = None
+                self._play_take = None
                 self.refresh_buttons()
         self.root.after(60, self.tick)
 

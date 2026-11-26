@@ -44,11 +44,26 @@ for k in range(2):
     a.toggle_rec()
 check("錄兩段都暫存在清單", len(a.takes) == 2 and a.take_list.size() == 2, str([t["name"] for t in a.takes]))
 check("每段都有錄到聲音", all(t["secs"] > 0.3 and abs(t["wet"]).max() > 0.05 for t in a.takes))
+check("錄音有分開存人聲和伴奏（事後可以對齊）", all(t["voice"] is not None and t["bgm"] is not None and len(t["voice"]) == len(t["wet"]) for t in a.takes))
+a.bgm_trim.set(20)
+check("播放錄音時改對齊：重新混好的長度正確", len(a.take_mix(a.takes[0])) == len(a.takes[0]["wet"]))
+a.bgm_trim.set(0)
 a.take_list.selection_clear(0, "end"); a.take_list.selection_set(0)
 a.play("wet")
 for _ in range(4):
     root.update(); time.sleep(0.05)
 check("可以播放第 1 段", a.eng.playing)
+a.bgm_trim.set(15); a.on_trim()
+for _ in range(6):
+    root.update(); time.sleep(0.05)
+check("播放中拉對齊：繼續播放", a.eng.playing)
+a.bgm_trim.set(0)
+# 多層混響＋立體寬度在真的引擎裡跑
+a.rv[0]["type"].set("大廳"); a.on_reverb_type(0); a.rv[0]["mix"].set(50)
+a.rv[1]["type"].set("人聲板"); a.on_reverb_type(1)
+for _ in range(10):
+    root.update(); time.sleep(0.05)
+check("開兩層混響後仍正常運作", a.eng.running and a.wave_mon.hist[-1] > 0.05)
 a.play("wet")
 a.toggle()   # 停止
 check("按停止後停止", not a.eng.running)
