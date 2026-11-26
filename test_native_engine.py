@@ -94,6 +94,12 @@ for blk in (64, 256, 512):
             ok = True
             break
     check("緩衝 %d 正常運作" % blk, ok)
+# 伴奏緩衝：耳機每次要 480（Realtek 常見）時伴奏不能斷；舊的固定緩衝會斷（確認測試真的測得到）
+for r, w in ((128, 128), (128, 480), (480, 480), (480, 128), (512, 480)):
+    n_new = ne.LIB.papa_test_bgm_sim(128, r, w, 80.0, 30.0, 1)
+    check("伴奏不斷：耳機每次 %d、伴奏每次 %d" % (r, w), n_new == 0, "斷 %d 次" % n_new)
+check("舊的固定緩衝在 Realtek 情況會斷（測試有效）", ne.LIB.papa_test_bgm_sim(128, 480, 480, 80.0, 30.0, 0) > 0)
+check("伴奏斷掉次數讀得到", e.bgm_underruns >= 0 and e.bgm_buffer_ms > 0, "%.1f ms" % e.bgm_buffer_ms)
 check("沒有處理錯誤", ne.LIB is not None and e._st()[12] == 0)
 e.stop()
 check("停止後不再運作", ne.LIB.papa_running() == 0)

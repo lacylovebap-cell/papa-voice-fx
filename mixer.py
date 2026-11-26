@@ -236,7 +236,7 @@ class MixerPage(tk.Frame):
                 label(ed, "立體寬度只有耳機聽得出來（直播 App 通常是單聲道）。", 8, SUB).pack(anchor="w", pady=(6, 0))
                 small_button(ed, "↺ 恢復這個類型的預設", lambda: (a.on_reverb_type(i), self.open_editor("rv", i))).pack(anchor="w", pady=(8, 0))
         elif kind == "polish":
-            self._title("人聲質感", "所有效果共用。讓人聲在手機、耳機上都大聲、清楚、好聽。都是 0＝不改變原本的聲音。")
+            self._title("人聲質感", ("現在調的是「無效果」自己的一組。" if a.active_preset is None else "現在調的是效果共用的一組（無效果另外一組）。") + "都是 0＝不改變原本的聲音。降噪所有效果共用。")
             cbk = lambda: a.apply()
             self._knob_grid(ed, [
                 ("loud", a.polish["loud"], 0, 100, "響度", "{:.0f}%", 0, 1, cbk),
@@ -244,6 +244,7 @@ class MixerPage(tk.Frame):
                 ("thick", a.polish["thick"], 0, 100, "厚度", "{:.0f}%", 0, 1, cbk),
                 ("widen", a.polish["widen"], 0, 100, "加寬（耳機）", "{:.0f}%", 0, 1, cbk),
                 ("deess", a.deess, 0, 100, "去齒音", "{:.0f}%", 40, 1, cbk),
+                ("gate", a.gate, 0, 100, "降噪", "{:.0f}%", 0, 1, cbk),
             ])
             label(ed, "響度＝自動把音量穩住　清晰度＝去悶＋空氣感　厚度＝更飽滿　加寬＝左右變寬（耳機）　去齒音＝壓住嘶嘶聲",
                   8, SUB, wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))

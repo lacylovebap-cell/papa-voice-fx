@@ -49,6 +49,8 @@ LIB.papa_rec_copy.restype = _I
 LIB.papa_rec_len.restype = _I
 LIB.papa_play_buffer.argtypes = [ctypes.POINTER(ctypes.c_float), _I]
 LIB.papa_play_buffer.restype = _I
+LIB.papa_test_bgm_sim.argtypes = [_I, _I, _I, _D, _D, _I]
+LIB.papa_test_bgm_sim.restype = ctypes.c_long
 
 sd = LIB   # app.py 用「engine.sd is None」判斷套件是否正常
 
@@ -164,7 +166,7 @@ class Engine:
     def _st(self):
         now = time.monotonic()
         if self._cache is None or now - self._cache_t > 0.02:
-            a = (_D * 20)()
+            a = (_D * 24)()
             LIB.papa_status(a)
             self._cache = list(a)
             self._cache_t = now
@@ -195,6 +197,14 @@ class Engine:
     @property
     def underruns(self):
         return int(self._st()[11])
+
+    @property
+    def bgm_underruns(self):
+        return int(self._st()[19])
+
+    @property
+    def bgm_buffer_ms(self):
+        return self._st()[20]
 
     @property
     def in_clip(self):

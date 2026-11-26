@@ -1,4 +1,5 @@
 """介面冒煙測試（需要 tkinter；在 Windows 打包機上執行）。"""
+import json
 import sys
 import tkinter as tk
 from tkinter import messagebox
@@ -82,8 +83,42 @@ a.rv[0]["type"].set("大廳"); a.on_reverb_type(0); a.rv[0]["mix"].set(37); a.de
 for name in list(app.PRESETS) + list(app.PRESETS):
     a.preset(name)
 a.clear_fx()
-check("切換所有效果後，混響 A 仍是大廳 37%", abs(fx.params["rv1_mix"] - 0.37) < 1e-6 and fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1)
-check("切換所有效果後，去齒音仍是 55%", abs(fx.params["deess"] - 0.55) < 1e-6)
+check("無效果：完全沒有混響（但混響設定還在）", all(fx.params["rv%d_mix" % (i + 1)] == 0 for i in range(3))
+      and abs(float(a.rv[0]["mix"].get()) - 37) < 1e-6)
+check("無效果：變聲照樣開著", fx.params["card"] is True)
+check("切換所有效果後回到無效果，無效果的去齒音仍是 55%", abs(fx.params["deess"] - 0.55) < 1e-6)
+a.preset("talk")
+check("按說話：混響 A 回來，是大廳 37%", abs(fx.params["rv1_mix"] - 0.37) < 1e-6 and fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1)
+# 人聲質感兩組：無效果自己一組，其他效果共用一組
+a.polish["loud"].set(70); a.apply()                 # 說話（效果共用那組）
+a.preset("sing")
+check("效果之間共用人聲質感：自然修音也是 70%", fx.params["loud"] == 0.7)
+a.clear_fx()
+check("無效果用自己那組（不是 70%）", fx.params["loud"] != 0.7)
+a.polish["loud"].set(20); a.apply()
+a.preset("electro")
+check("切到電音：還是效果共用的 70%", fx.params["loud"] == 0.7)
+a.clear_fx()
+check("切回無效果：還是無效果自己的 20%", fx.params["loud"] == 0.2)
+check("無效果時混響選單不能改", "disabled" in a.rv_widgets[0].state())
+a.preset("talk")
+check("有效果時混響選單可以改", "disabled" not in a.rv_widgets[0].state())
+s_saved = json.loads(a.polish_sets_var.get())
+check("兩組人聲質感都會存", s_saved["dry"]["loud"] == 20 and s_saved["fx"]["loud"] == 70)
+for g in ("dry", "fx"):
+    a.polish_sets[g]["loud"] = 0
+a.polish["loud"].set(0); a.apply(); a.preset("talk")
+# 降噪
+a.gate.set(60); a.apply()
+check("降噪推桿有送出", abs(fx.params["gate"] - 0.6) < 1e-9)
+a.clear_fx()
+check("無效果也有降噪", abs(fx.params["gate"] - 0.6) < 1e-9)
+a.gate.set(0); a.apply()
+# 滑鼠滾輪不能改到下拉選單（以前會不小心換掉裝置）
+check("滾輪經過下拉選單：不會改選項", root.bind_class("TCombobox", "<MouseWheel>") != "")
+before = a.dev_bgm.get()
+a.cb_bgm.event_generate("<MouseWheel>", delta=-120); root.update()
+check("滾輪滾過伴奏選單後裝置不變", a.dev_bgm.get() == before)
 for r in a.rv:
     r["mix"].set(0)
 a.apply()
@@ -262,7 +297,8 @@ for sv in (srv1, srv2):
         pass
 a.refresh_buttons()
 root.update()
-check("按鈕文字顯示鎖定", "開著" in str(a.btn_card.cget("text")))
+check("按鈕文字顯示鎖定（專屬）", "專屬" in str(a.btn_card.cget("text")) and "開" in str(a.btn_card.cget("text")))
+check("變聲按鈕和停止差不多大（不會撐滿整排）", a.btn_card.pack_info().get("expand") in (0, "0", False))
 check("視窗標題是 PAPA 調音台", root.title() == "PAPA 調音台")
 a.save_settings()
 root.destroy()

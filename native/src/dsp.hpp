@@ -738,12 +738,43 @@ static const ColorBand COLORS[6][5] = {
     {{300, 6, 0.5}, {1200, -4, 2.0}, {4000, 3, 0.8}, {8000, 6, 1.5}, {12000, 5, 0.3}},             // 5 ASMR
 };
 
+// ---------------------------------------------------------------- 降噪（靜音時壓掉細小雜音）
+// 向下擴展器：聲音低於門檻時慢慢壓低，一出聲立刻打開；不看未來的聲音，所以不增加延遲。
+struct NoiseGate {
+    double sr, env = 0, gdb = 0, hold = 0;
+    explicit NoiseGate(double s = 48000) : sr(s) {}
+    // amt 0～1：0＝不處理；越大門檻越高、壓得越多
+    void process(double* y, int n, double amt) {
+        if (n <= 0) return;
+        double ss = 0;                                   // 用平均音量判斷（細小雜音的尖峰不會讓它打開）
+        for (int i = 0; i < n; i++) ss += y[i] * y[i];
+        double rms = std::sqrt(ss / n);
+        env = std::max(rms, env * std::exp(-n / (sr * 0.05)));
+        double tgt = 0;
+        if (amt > 0.001) {
+            double lvl = 20 * std::log10(env + 1e-9);
+            double thr = -78.0 + 33.0 * amt;          // -78 dB ～ -45 dB（平均音量）
+            double range = -(10.0 + 30.0 * amt);      // 最多壓 10 ～ 40 dB
+            if (lvl >= thr) { hold = 0.15 * sr; tgt = 0; }
+            else if (hold > 0) { hold -= n; tgt = 0; }
+            else tgt = std::max(range, (lvl - thr) * 4.0);
+        } else hold = 0;
+        double g0db = gdb;
+        if (tgt > gdb) gdb = tgt;                                        // 出聲：立刻打開
+        else gdb += (tgt - gdb) * (1 - std::exp(-n / (sr * 0.08)));      // 安靜：慢慢壓下去
+        if (g0db > -0.01 && gdb > -0.01) return;
+        double g0 = std::pow(10.0, g0db / 20), g1 = std::pow(10.0, gdb / 20);
+        for (int i = 0; i < n; i++) y[i] *= g0 + (g1 - g0) * (i + 1) / n;
+    }
+};
+
 // ---------------------------------------------------------------- 整合
 struct FxParams {
     bool phone = false; double phone_dist = 0.25; bool machine = false;
     double eq_lo = 0, eq_mid = 0, eq_hi = 0, comp = 0.4;
     bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0, robot_fx = 0;
     double loud = 0, clarity = 0, thick = 0, widen = 0;   // 人聲質感（預設關閉）
+    double gate = 0;                                      // 降噪（預設關閉）
 };
 
 struct VoiceFx {
@@ -767,12 +798,13 @@ struct VoiceFx {
     Biquad clar[3];
     Doubler doubler;
     Leveler leveler;
+    NoiseGate gate;
     std::vector<float> side;        // 混響的左右差（只給耳機做立體寬度）
     double ring_ph = 0;
     std::vector<double> t1, t2;
 
     VoiceFx(double s = 48000, double window_ms = 21.0)
-        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), doubler(s), leveler(s) {
+        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), doubler(s), leveler(s), gate(s) {
         clar[0] = Biquad(BQ_PEAKING, 250, s, 0.0, 1.0); clar[1] = Biquad(BQ_PEAKING, 5000, s, 0.0, 1.0); clar[2] = Biquad(BQ_HIGHSHELF, 9000, s, 0.0);
         for (auto& L : layers) L.init(s);
         side.assign(8192, 0.f);
@@ -835,6 +867,7 @@ struct VoiceFx {
         if ((int)t1.size() < n) { t1.resize(n); t2.resize(n); }
         double* y = t1.data();
         for (int i = 0; i < n; i++) y[i] = i < n0 ? io[i] : 0.0;
+        gate.process(y, n0, p.gate);   // 降噪：先把靜音時的細小雜音壓掉
         tuner.process(y, n);
 
         // 電話音

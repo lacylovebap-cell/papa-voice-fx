@@ -823,6 +823,46 @@ class Limiter:
 
 
 # ---------------------------------------------------------------- 整合
+class NoiseGate:
+    """降噪（向下擴展器）：聲音低於門檻時慢慢壓低，一出聲立刻打開；不增加延遲。和 C++ 版相同。"""
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.env = 0.0
+        self.gdb = 0.0
+        self.hold = 0.0
+
+    def process(self, y, n, amt):
+        if n <= 0:
+            return y
+        rms = float(np.sqrt(np.mean(y[:n] ** 2)))      # 用平均音量判斷（細小雜音的尖峰不會讓它打開）
+        self.env = max(rms, self.env * np.exp(-n / (self.sr * 0.05)))
+        tgt = 0.0
+        if amt > 0.001:
+            lvl = 20 * np.log10(self.env + 1e-9)
+            thr = -78.0 + 33.0 * amt
+            rng = -(10.0 + 30.0 * amt)
+            if lvl >= thr:
+                self.hold, tgt = 0.15 * self.sr, 0.0
+            elif self.hold > 0:
+                self.hold -= n
+            else:
+                tgt = max(rng, (lvl - thr) * 4.0)
+        else:
+            self.hold = 0.0
+        g0db = self.gdb
+        if tgt > self.gdb:
+            self.gdb = tgt
+        else:
+            self.gdb += (tgt - self.gdb) * (1 - np.exp(-n / (self.sr * 0.08)))
+        if g0db > -0.01 and self.gdb > -0.01:
+            return y
+        g0, g1 = 10 ** (g0db / 20), 10 ** (self.gdb / 20)
+        y = y.copy()
+        y[:n] *= g0 + (g1 - g0) * np.arange(1, n + 1) / n
+        return y
+
+
 class VoiceFx:
     CARD_SHIFT = 1.5  # 聲卡變音的升調量（由原聲／說話二比對量測）
 
@@ -832,7 +872,7 @@ class VoiceFx:
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
             eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0, robot_fx=0.0,
-            loud=0.0, clarity=0.0, thick=0.0, widen=0.0,
+            loud=0.0, clarity=0.0, thick=0.0, widen=0.0, gate=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -862,6 +902,7 @@ class VoiceFx:
                      Biquad("highshelf", 9000, sr, 0.0)]
         self.doubler = Doubler(sr)
         self.leveler = Leveler(sr)
+        self.gate = NoiseGate(sr)
         self.info = (0.0, None, None)
         self.set()
 
@@ -924,6 +965,7 @@ class VoiceFx:
         pad = (-n0) % 4
         if pad:
             x = np.concatenate((x, np.zeros(pad)))
+        x = self.gate.process(x, n0, float(self.p["gate"]))   # 降噪：先把靜音時的細小雜音壓掉
         y = self.tuner.process(x)
         self.info = (self.tuner.f,
                      self.tuner.det if self.tuner.voiced else None,

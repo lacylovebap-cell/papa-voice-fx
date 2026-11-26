@@ -112,6 +112,11 @@ struct Engine {
     Ring cable_ring{1 << 16};
     Ring bgm_ring{1 << 16};
     size_t cable_target = 256;
+    // 伴奏對時緩衝：跟著「耳機那條每次要多少」和「伴奏每次送來多少」自動加大。
+    // 耳機用主機板 Realtek 時每次常是 480 個樣本（10 ms），只留 3 個小區塊的緩衝會一直斷（聽起來卡卡的）。
+    size_t bgm_target = 384;
+    std::atomic<int> bgm_in_max{0};
+    std::atomic<long> bgm_underruns{0};
     std::vector<double> bgm_fifo;  // 伴奏延後用
     size_t bgm_fifo_len = 0;
     long bgm_comp = 0;
@@ -218,6 +223,7 @@ struct Engine {
             else if (k == "clarity") p.clarity = v;
             else if (k == "thick") p.thick = v;
             else if (k == "widen") p.widen = v;
+            else if (k == "gate") p.gate = v;
             else if (fx->set_reverb_key(k, v)) return;
             if (sc) fx->tuner.update_scale();
             fx->apply();
@@ -256,7 +262,14 @@ struct Engine {
         bool have_bgm = bgm_on_dev;
         float pk_bgm = 0;
         if (have_bgm) {
-            bgm_ring.read(tmp_bg.data(), frames, (size_t)block * 3);
+            size_t need_t = std::max<size_t>({(size_t)block * 3, (size_t)frames * 2 + (size_t)bgm_in_max.load(), bgm_target});
+            bgm_target = std::min<size_t>(need_t, (size_t)SR / 5);
+            long before = bgm_ring.underruns;
+            bgm_ring.read(tmp_bg.data(), frames, bgm_target);
+            if (bgm_ring.underruns > before) {
+                bgm_underruns++;
+                if (bgm_target < (size_t)SR / 10) bgm_target += (size_t)std::max(block, frames);   // 還是不夠：再多存一點
+            }
             float gb = bgm_on ? (float)g_bgm : 0.f;
             for (int i = 0; i < frames; i++) { tmp_bg[i] *= gb; pk_bgm = std::max(pk_bgm, std::fabs(tmp_bg[i])); }
         } else std::fill(tmp_bg.begin(), tmp_bg.begin() + frames, 0.f);
@@ -380,6 +393,7 @@ struct Engine {
         Engine* e = (Engine*)d->pUserData;
         const float* x = (const float*)in;
         if (e->bgm_tmp.size() < frames) return;
+        if ((int)frames > e->bgm_in_max.load()) e->bgm_in_max.store((int)frames);
         float* m = e->bgm_tmp.data();
         float pk = 0;
         for (ma_uint32 i = 0; i < frames; i++) { m[i] = 0.5f * (x[2 * i] + x[2 * i + 1]); pk = std::max(pk, std::fabs(m[i])); }
@@ -412,6 +426,7 @@ struct Engine {
         lim_out = Limiter(SR); lim_mon = Limiter(SR);
         cable_ring.clear(); bgm_ring.clear();
         cable_target = (size_t)block * 2;
+        bgm_target = (size_t)block * 3; bgm_in_max = 0; bgm_underruns = 0;
         bgm_fifo.assign((size_t)SR, 0.0); bgm_fifo_len = 0;
         xruns = 0; errors = 0;
         rec_wet.assign(rec_max, 0.f); rec_dry.assign(rec_max, 0.f);
@@ -549,6 +564,7 @@ PAPA_API int papa_last_error(char* out, int cap) {
 
 // 狀態：0-3 電平(麥克風/耳機/直播/伴奏) 4 頻率 5 唱的音 6 目標音 7 調 8 移動量 9 延遲ms
 // 10 直播緩衝ms 11 爆音次數 12 錯誤次數 13 麥克風太大聲 14 錄音中 15 已錄秒數 16 播放中 17 伴奏擷取電平 18 伴奏有開
+// 19 伴奏斷掉次數 20 伴奏緩衝ms
 PAPA_API void papa_status(double* o) {
     Engine& e = E();
     o[0] = e.lv_inp; o[1] = e.lv_mon; o[2] = e.lv_out; o[3] = e.lv_bgm;
@@ -563,6 +579,8 @@ PAPA_API void papa_status(double* o) {
     o[16] = e.playing ? 1 : 0;
     o[17] = e.lv_bgm_cap;
     o[18] = e.bgm_on_dev ? 1 : 0;
+    o[19] = (double)e.bgm_underruns;
+    o[20] = (double)e.bgm_target * 1000.0 / SR;
 }
 
 PAPA_API void papa_rec_start() { Engine& e = E(); e.playing = false; e.rec_n = 0; e.recording = true; }
@@ -602,3 +620,25 @@ PAPA_API int papa_rec_copy(int which, float* out, int cap) {
     return n;
 }
 PAPA_API int papa_rec_len() { return (int)E().rec_len; }
+
+// 測試用：模擬「伴奏每次送來 w 個樣本、耳機每次要 r 個樣本」，兩邊時鐘差 ppm，跑 secs 秒，回傳伴奏斷掉次數。
+// adaptive=0 用舊的固定緩衝（3 個區塊），1 用新的自動緩衝。
+PAPA_API long papa_test_bgm_sim(int block, int r, int w, double ppm, double secs, int adaptive) {
+    Ring ring(1 << 16);
+    std::vector<float> in(w, 0.5f), out(r);
+    size_t target = (size_t)block * 3;
+    long under = 0;
+    double tw = 0, tr = 0, dw = (double)w / SR * (1 + ppm * 1e-6), dr = (double)r / SR;
+    while (tr < secs) {
+        if (tw <= tr) { ring.write(in.data(), w); tw += dw; continue; }
+        if (adaptive) target = std::min<size_t>(std::max<size_t>({(size_t)block * 3, (size_t)r * 2 + (size_t)w, target}), (size_t)SR / 5);
+        long b = ring.underruns;
+        ring.read(out.data(), r, target);
+        if (ring.underruns > b && tr > 0.5) {   // 開頭 0.5 秒先存緩衝，不算
+            under++;
+            if (adaptive && target < (size_t)SR / 10) target += (size_t)std::max(block, r);
+        }
+        tr += dr;
+    }
+    return under;
+}

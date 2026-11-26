@@ -539,5 +539,23 @@ per_block = el / (len(xx) // BLOCK) * 1000
 check("全效果開啟：輸出有效", np.all(np.isfinite(o)) and np.max(np.abs(o)) <= 1.0)
 check("全效果開啟：每區塊耗時遠低於區塊長度(5.3ms)", per_block < 2.5, f"每區塊 {per_block:.2f} ms")
 
+# ---------- 降噪：沒出聲時把細小雜音壓掉，出聲時不動、不延遲
+rng = np.random.default_rng(1)
+hiss = (rng.standard_normal(SR * 2) * 10 ** (-60 / 20)).astype(np.float32)        # -60 dB 的沙沙聲
+tone = (0.3 * np.sin(2 * np.pi * 220 * np.arange(SR) / SR)).astype(np.float32)
+sig = np.concatenate([hiss, tone + hiss[:SR], hiss])
+def run_gate(amt):
+    f = VoiceFx(SR); f.set(comp=0.0, verb=0.0, gate=amt)
+    return np.concatenate([f.process(sig[i:i + 256]) for i in range(0, len(sig) // 256 * 256, 256)])
+o0, o1 = run_gate(0.0), run_gate(0.7)
+rms = lambda a: float(np.sqrt(np.mean(a.astype(float) ** 2)) + 1e-12)
+q0, q1 = rms(o0[SR:int(SR * 1.9)]), rms(o1[SR:int(SR * 1.9)])
+check("降噪：沒出聲時雜音明顯變小（至少 15 dB）", 20 * np.log10(q0 / q1) > 15, "壓了 %.1f dB" % (20 * np.log10(q0 / q1)))
+v0, v1 = rms(o0[int(SR * 2.1):int(SR * 2.9)]), rms(o1[int(SR * 2.1):int(SR * 2.9)])
+check("降噪：出聲時音量不變", abs(20 * np.log10(v1 / v0)) < 0.3, "差 %.2f dB" % (20 * np.log10(v1 / v0)))
+on = int(np.argmax(np.abs(o1[SR * 2 - 2048:]) > 0.05)); on0 = int(np.argmax(np.abs(o0[SR * 2 - 2048:]) > 0.05))
+check("降噪：一出聲立刻打開（不慢於關閉時 3 ms）", on - on0 <= 144, "差 %d 樣本" % (on - on0))
+check("降噪拉 0：和沒有降噪完全一樣", np.allclose(o0, run_gate(0.0)))
+
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)

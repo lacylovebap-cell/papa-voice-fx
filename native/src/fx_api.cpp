@@ -50,6 +50,7 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "clarity") p.clarity = v;
     else if (k == "thick") p.thick = v;
     else if (k == "widen") p.widen = v;
+    else if (k == "gate") p.gate = v;
     else if (k == "window_ms") fx->tuner.set_window(v);
     else if (fx->set_reverb_key(k, v)) return 1;
     else return 0;

@@ -121,6 +121,7 @@ class BackingCapture:
         self.running = False
         self.error = None
         self.level = 0.0
+        self.max_chunk = 0
         self.th = None
 
     def start(self):
@@ -144,6 +145,7 @@ class BackingCapture:
                     d = rec.record(numframes=self.block)
                     if d is None or len(d) == 0:
                         continue
+                    self.max_chunk = max(self.max_chunk, len(d))
                     mono = d.mean(axis=1).astype(np.float32) if d.ndim > 1 else d.astype(np.float32)
                     self.level = float(np.max(np.abs(mono)))
                     self.ring.write(mono)
@@ -213,6 +215,8 @@ class Engine:
         self.xruns = 0
         self._t_started = None
         self.cable_target = 512
+        self.bgm_target = 768
+        self.bgm_underruns = 0
         self.out_target = 512          # 輸出緩衝目標（樣本）
         self.bgm_comp = 0              # 伴奏延後量（樣本），讓直播裡伴奏和人聲對齊
         self.bgm_trim_ms = 0.0         # 使用者微調
@@ -322,7 +326,16 @@ class Engine:
             self.level = float(np.max(np.abs(y))) if len(y) else 0.0
             # 伴奏：不經過任何變音處理，直接混進監聽與直播
             if self.bgm_ring is not None:
-                bg = self.bgm_ring.read(len(y), self.block * 3).astype(np.float64)
+                # 伴奏緩衝跟著「耳機每次要多少」「伴奏每次送來多少」自動加大（Realtek 耳機常一次 480 個樣本）
+                bk = self.backing
+                w_max = bk.max_chunk if bk is not None else 0
+                self.bgm_target = min(max(self.block * 3, len(y) * 2 + w_max, self.bgm_target), SR // 5)
+                ub = self.bgm_ring.underruns
+                bg = self.bgm_ring.read(len(y), self.bgm_target).astype(np.float64)
+                if self.bgm_ring.underruns > ub:
+                    self.bgm_underruns += 1
+                    if self.bgm_target < SR // 10:
+                        self.bgm_target += max(self.block, len(y))
                 bg *= self.gains["bgm"] if self.bgm_on else 0.0
                 # 伴奏延後：你是聽著耳機裡的伴奏唱的，人聲回到電腦時已經晚了「一圈延遲」，
                 # 所以把伴奏同樣延後，直播裡兩者才會剛好對齊
@@ -504,9 +517,11 @@ class Engine:
         self._t_started = _now()
         self.running = True
         self.backing_error = None
+        self.bgm_target = self.block * 3
+        self.bgm_underruns = 0
         if backing:
             try:
-                self.bgm_ring = Ring(self.block * 32)
+                self.bgm_ring = Ring(max(self.block * 32, SR // 2))
                 self.backing = BackingCapture(backing, self.bgm_ring, self.block)
                 self.backing.start()
             except Exception as e:
@@ -555,6 +570,10 @@ class Engine:
         if self.mon_ring is not None:
             n += self.mon_ring.underruns
         return n
+
+    @property
+    def bgm_buffer_ms(self):
+        return self.bgm_target * 1000.0 / SR
 
     @property
     def cable_underruns(self):

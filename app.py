@@ -280,6 +280,16 @@ class App:
         self.reverb_names = list(REVERB_NAMES)
         self.polish = {k: self.var("pol_" + k, 0, D) for k in POLISH}
         self.deess = self.var("deess", 40, D)
+        self.gate = self.var("gate", 0, D)          # 降噪：所有效果（包括無效果）共用，預設 0＝不處理
+        # 人聲質感分兩組：「無效果」自己一組；其他效果共用一組。切換時各自記住。
+        self.polish_sets_var = self.var("polish_sets", "")
+        cur = self._polish_now()
+        try:
+            ps = json.loads(self.polish_sets_var.get() or "{}")
+        except Exception:
+            ps = {}
+        self.polish_sets = {g: dict(cur, **{k: float(v) for k, v in ps.get(g, {}).items() if k in cur}) for g in ("dry", "fx")}
+        self._polish_group = None       # None＝下次 apply 直接載入目前那組
         self.g_dry = self.var("g_dry", 0, D, remember=False)   # 耳機混原聲：已不需要（變聲延遲很低），固定 0
         self.el_style = self.var("el_style3", "電音")
         if self.el_style.get() not in EL_STYLES:
@@ -370,7 +380,18 @@ class App:
         win = canvas.create_window((0, 0), window=wrap, anchor="nw")
         wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
-        self.root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        def _page_wheel(e):
+            # 只有滑鼠在第一頁時才捲動頁面
+            if str(e.widget).startswith(str(wrap)) or e.widget in (canvas, wrap):
+                canvas.yview_scroll(int(-e.delta / 120), "units")
+        self.root.bind_all("<MouseWheel>", _page_wheel)
+
+        def _no_wheel_change(e):
+            # 滾輪經過下拉選單／推桿：只捲動頁面，絕對不改選項（以前會不小心換掉麥克風、伴奏裝置，聲音就斷掉）
+            _page_wheel(e)
+            return "break"
+        for cls in ("TCombobox", "TScale", "Scale"):
+            self.root.bind_class(cls, "<MouseWheel>", _no_wheel_change)
         self.canvas = canvas
         self.wrap = wrap
         # 視窗大小：不超過螢幕高度
@@ -382,8 +403,8 @@ class App:
         top.pack(fill="x")
         self.btn_start = self.button(top, "▶ 開始", self.toggle, color=C_ACCENT, fg="white", size=12, width=7)
         self.btn_start.pack(side="left", fill="y")
-        self.btn_card = self.button(top, "", self.toggle_card, size=10)
-        self.btn_card.pack(side="left", padx=8, fill="both", expand=True)
+        self.btn_card = self.button(top, "", self.toggle_card, size=10, width=16)
+        self.btn_card.pack(side="left", padx=8, fill="y")
         sp = tk.Frame(top, bg=C_DEEP, padx=10, pady=4, highlightthickness=1, highlightbackground=C_LINE)
         sp.pack(side="left", fill="y")
         r1 = tk.Frame(sp, bg=C_DEEP)
@@ -394,8 +415,10 @@ class App:
         self.label(r1, "→ 送", 8, C_SUB).pack(side="left")
         self.st_out = self.label(r1, "—", 13, C_PINK, True, width=4, anchor="w")
         self.st_out.pack(side="left")
-        self.st_diff = self.label(r1, "", 8, C_SUB, anchor="w")
+        self.st_diff = self.label(r1, "", 8, C_SUB, anchor="w", width=12)
         self.st_diff.pack(side="left", padx=(4, 0))
+        self.st_key = self.label(r1, "", 8, C_SUB, anchor="w", width=13)
+        self.st_key.pack(side="left")
         self.st_funcs = self.label(sp, "", 8, C_SUB, anchor="w")
         self.st_funcs.pack(anchor="w")
         self.msg = self.label(wrap, "戴好耳機，按「開始」。", 9, C_SUB, anchor="w")
@@ -486,24 +509,28 @@ class App:
         # 混響 A／B／C＋人聲質感：和效果完全分開，切換效果不會改變，按效果也不會自己加混響
         fixed = tk.Frame(fx, bg=C_CARD)
         fixed.pack(fill="x", pady=(8, 0))
+        self.rv_widgets = []
         for i in range(3):
             self.label(fixed, "🌫 混響 " + "ABC"[i], 9, C_TXT, True).grid(row=i, column=0, sticky="w", pady=1)
             cb = ttk.Combobox(fixed, textvariable=self.rv[i]["type"], values=["關"] + REVERB_NAMES, state="readonly", width=11)
             cb.grid(row=i, column=1, padx=6)
             cb.bind("<<ComboboxSelected>>", lambda e, k=i: self.on_reverb_type(k))
-            ttk.Scale(fixed, from_=0, to=100, variable=self.rv[i]["mix"], orient="horizontal", length=150,
-                      command=lambda _v: self.apply()).grid(row=i, column=2, padx=4)
+            sc = ttk.Scale(fixed, from_=0, to=100, variable=self.rv[i]["mix"], orient="horizontal", length=150,
+                           command=lambda _v: self.apply())
+            sc.grid(row=i, column=2, padx=4)
             vl = self.label(fixed, "", 8, C_SUB, width=5)
             vl.grid(row=i, column=3)
             self.rv[i]["mix"]._fmt = (vl, "{:.0f}%")
-            self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=8).grid(row=i, column=4, padx=2)
+            gb = self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=8)
+            gb.grid(row=i, column=4, padx=2)
+            self.rv_widgets += [cb, sc, gb]
         pol = tk.Frame(fixed, bg=C_CARD)
         pol.grid(row=0, column=5, rowspan=3, sticky="nw", padx=(18, 0))
         self.label(pol, "🎤 人聲質感", 9, C_TXT, True).grid(row=0, column=0, columnspan=3, sticky="w")
         for n, (k, var) in enumerate((("loud", self.polish["loud"]), ("clarity", self.polish["clarity"]),
-                                      ("thick", self.polish["thick"]), ("deess", self.deess))):
+                                      ("thick", self.polish["thick"]), ("deess", self.deess), ("gate", self.gate))):
             r, c = 1 + n // 2, (n % 2) * 3
-            self.label(pol, POLISH_NAMES.get(k, "去齒音"), 8, C_SUB).grid(row=r, column=c, sticky="e", padx=(0 if c == 0 else 8, 2))
+            self.label(pol, POLISH_NAMES.get(k, "去齒音" if k == "deess" else "🔇 降噪"), 8, C_YELLOW if k == "gate" else C_SUB).grid(row=r, column=c, sticky="e", padx=(0 if c == 0 else 8, 2))
             ttk.Scale(pol, from_=0, to=100, variable=var, orient="horizontal", length=90,
                       command=lambda _v: self.apply()).grid(row=r, column=c + 1)
             vl = self.label(pol, "", 8, C_SUB, width=4)
@@ -513,8 +540,11 @@ class App:
         pb.grid(row=0, column=3, columnspan=3, sticky="e")
         self.button(pb, "✨ 一鍵 CD 質感", self.apply_cd_template, color="#2c4a63", size=8).pack(side="left")
         self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
-        self.label(fx, "混響和人聲質感：所有效果共用，切換效果不會變，按效果也不會自己加混響。⚙＝更多細調。",
-                   8, C_SUB, anchor="w").pack(fill="x", pady=(4, 0))
+        self.fx_note = self.label(fx, "", 8, C_SUB, anchor="w")
+        self.fx_note.pack(fill="x", pady=(4, 0))
+        self.label(fx, "🔇 降噪：沒出聲時把細細沙沙的小雜音壓掉（0＝不處理，越右壓越多；出聲時不影響、不增加延遲）。所有效果共用。",
+                   8, C_SUB, anchor="w").pack(fill="x")
+        self._refresh_dry_ui()
 
         # ---- 錄音
         rc = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
@@ -680,7 +710,52 @@ class App:
         self.msg.config(text="運作中。對著麥克風出聲，看「麥克風」那一行有沒有跳動。")
 
     # ------------------------------------------------------------ 參數
+    # ---- 人聲質感兩組（無效果／效果共用）
+    POLISH_KEYS = POLISH + ("deess",)
+
+    def _polish_now(self):
+        d = {k: float(self.polish[k].get()) for k in POLISH}
+        d["deess"] = float(self.deess.get())
+        return d
+
+    def _polish_load(self, d):
+        for k, v in d.items():
+            (self.deess if k == "deess" else self.polish[k]).set(v)
+
+    def polish_group(self):
+        """無效果＝「dry」：沒有混響、人聲質感用自己那組。其他效果＝「fx」。"""
+        return "dry" if self.active_preset is None else "fx"
+
+    def _sync_polish_group(self):
+        g = self.polish_group()
+        if g != self._polish_group:
+            if self._polish_group is not None:
+                self.polish_sets[self._polish_group] = self._polish_now()
+            self._polish_load(self.polish_sets[g])
+            self._polish_group = g
+            if hasattr(self, "rv_widgets"):
+                self._refresh_dry_ui()
+        else:
+            self.polish_sets[g] = self._polish_now()
+        self.polish_sets_var.set(json.dumps(self.polish_sets, ensure_ascii=False))
+
+    def _refresh_dry_ui(self):
+        dry = self.polish_group() == "dry"
+        for w in self.rv_widgets:
+            try:
+                if isinstance(w, (ttk.Scale, ttk.Combobox)):
+                    w.state(["disabled"] if dry else (["!disabled", "readonly"] if isinstance(w, ttk.Combobox) else ["!disabled"]))
+                else:
+                    w.config(state="disabled" if dry else "normal")
+            except Exception:
+                pass
+        if hasattr(self, "fx_note"):
+            self.fx_note.config(text=("✋ 無效果：沒有混響（變聲照樣開著）。人聲質感是「無效果」自己的一組，切到別的效果再回來還是這樣。"
+                                      if dry else "混響和人聲質感：說話、修音、電音等效果共用；無效果另外一組、沒有混響。⚙＝更多細調。"),
+                                fg=C_YELLOW if dry else C_SUB)
+
     def apply(self):
+        self._sync_polish_group()
         for v in self.vars.values():
             fm = getattr(v, "_fmt", None)
             if fm:
@@ -699,12 +774,13 @@ class App:
                   card=bool(self.card.get()), electro_fx=g("electro_fx") / 100, deess=float(self.deess.get()) / 100)
         for k in POLISH:
             kw[k] = float(self.polish[k].get()) / 100
+        kw["gate"] = float(self.gate.get()) / 100
         kw["mon_mode"] = int(self.listen.get())
         for i, r in enumerate(self.rv):
             t = r["type"].get()
             n = "rv%d_" % (i + 1)
             kw[n + "type"] = (REVERB_NAMES.index(t) + 1) if t in REVERB_NAMES else 0
-            kw[n + "mix"] = float(r["mix"].get()) / 100 if t in REVERB_NAMES else 0.0
+            kw[n + "mix"] = float(r["mix"].get()) / 100 if (t in REVERB_NAMES and self.polish_group() == "fx") else 0.0   # 無效果：完全沒有混響
             kw[n + "size"] = float(r["size"].get()) / 100
             kw[n + "bright"] = float(r["bright"].get()) / 100
             kw[n + "pre"] = float(r["pre"].get())
@@ -910,7 +986,9 @@ class App:
                     tweaks=json.loads(json.dumps(self.fx_tweaks)),
                     reverb=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv],
                     deess=float(self.deess.get()),
-                    polish={k: float(self.polish[k].get()) for k in POLISH})
+                    polish={k: float(self.polish[k].get()) for k in POLISH},
+                    polish_sets=json.loads(json.dumps(dict(self.polish_sets, **{self.polish_group(): self._polish_now()}))),
+                    gate=float(self.gate.get()))
 
     def _store_scenes(self):
         self.scenes_var.set(json.dumps(self.scenes, ensure_ascii=False))
@@ -948,6 +1026,14 @@ class App:
         for k, v in s.get("polish", {}).items():
             if k in self.polish:
                 self.polish[k].set(v)
+        if "gate" in s:
+            self.gate.set(s["gate"])
+        if isinstance(s.get("polish_sets"), dict):
+            for g in ("dry", "fx"):
+                self.polish_sets[g].update({k: float(v) for k, v in s["polish_sets"].get(g, {}).items() if k in self.polish_sets[g]})
+        else:   # 舊的存檔：只有一組，當作「效果共用」那組
+            self.polish_sets["fx"] = self._polish_now()
+        self._polish_group = None       # 依下面選的效果載入對應那組
         act = s.get("active")
         if act in PRESETS:
             self.active_preset = None
@@ -1048,9 +1134,9 @@ class App:
         on = bool(self.card.get())
         c = C_PINK if on else (C_YELLOW if self.personal.get() else C_BTN)
         if self.personal.get():
-            txt = "🔒 變聲：開著（專屬模式，按這裡關）" if on else "⚠ 變聲關了＝原音！（按這裡開）"
+            txt = "🔒 變聲：開（專屬）" if on else "⚠ 變聲關＝原音！"
         else:
-            txt = "🎭 變聲（升 1.5 半音）：開" if on else "🎭 變聲：關（原聲）"
+            txt = "🎭 變聲：開" if on else "🎭 變聲：關（原聲）"
         self.btn_card.config(text=txt,
                              bg=c, activebackground=c, fg=C_DARKTXT if on else (C_DARKTXT if self.personal.get() else C_TXT))
         b = bool(self.bgm_on.get())
@@ -1254,25 +1340,32 @@ class App:
         for k in ("inp", "mon", "out", "bgm"):
             getattr(self, "wave_" + k).push(e.lv[k] if run else 0.0)
 
-        if run:
+        import time as _t
+        slow = _t.monotonic() - getattr(self, "_st_t", 0) > 0.25      # 音名每 0.25 秒更新一次，不會一直閃
+        if run and slow:
+            self._st_t = _t.monotonic()
             f, det, tgt = e.info
             if det is not None and e.fx is not None:
                 outp = det + e.fx.tuner.cur          # 實際送出去的音高 ＝ 唱的音 ＋ 目前移動量
-                self.st_in.config(text=note_name(det))
-                self.st_out.config(text=note_name(outp))
                 k = e.fx.tuner.keyt.key
-                ks = ("聽起來是 %s 大調" % KEY_NAMES[k]) if (k is not None and self.mode.get() in ("natural", "electro")) else ""
+                ks = ("%s 大調" % KEY_NAMES[k]) if (k is not None and self.mode.get() in ("natural", "electro")) else ""
                 d = (outp - det) * 100
-                self.st_diff.config(text="（%s %d 音分）%s" % ("升高" if d >= 0 else "降低", abs(round(d)), ("\n" + ks) if ks else ""))
+                self._set_text(self.st_in, note_name(det))
+                self._set_text(self.st_out, note_name(outp))
+                self._set_text(self.st_diff, "%s%d 音分" % ("+" if d >= 0 else "-", abs(round(d))))
+                self._set_text(self.st_key, ks)
             else:
-                self.st_in.config(text="—"); self.st_out.config(text="—"); self.st_diff.config(text="（沒有聲音）")
+                for w, t in ((self.st_in, "—"), (self.st_out, "—"), (self.st_diff, "（沒有聲音）"), (self.st_key, "")):
+                    self._set_text(w, t)
+        if run:
             bk = e.backing
             bmsg = ""
             if e.backing_error or (bk is not None and bk.error):
                 bmsg = "\n伴奏抓不到：" + str(e.backing_error or bk.error)
             mode = ("C++ 底層引擎・" if NATIVE else "Python 引擎・") + ("收音＋耳機同一條線（最即時）" if e.duplex else "收音、耳機分開（相容模式）")
-            self.status.config(text="%s\n耳機聽自己的延遲：約 %.0f ms\n直播那條自動緩衝：%.0f ms（不影響耳機）\n耳機爆音次數：%d%s"
-                               % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bmsg))
+            bstat = ("\n伴奏緩衝：%.0f ms，斷掉 %d 次" % (getattr(e, "bgm_buffer_ms", 0), getattr(e, "bgm_underruns", 0))) if e.backing is not None or getattr(e, "bgm_buffer_ms", 0) else ""
+            self._set_text(self.status, "%s\n耳機聽自己的延遲：約 %.0f ms\n直播那條自動緩衝：%.0f ms（不影響耳機）\n耳機爆音次數：%d%s%s"
+                               % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bstat, bmsg))
             self.auto_protect()
             if getattr(e, "last_error", None):
                 self.msg.config(text="⚠ 處理出錯，聲音沒有送出去！請截圖給 Claude：" + str(e.last_error)[:80], fg="#ff7b72")
@@ -1288,6 +1381,11 @@ class App:
                 self._play_take = None
                 self.refresh_buttons()
         self.root.after(60, self.tick)
+
+    @staticmethod
+    def _set_text(w, t):
+        if w.cget("text") != t:      # 一樣就不重畫
+            w.config(text=t)
 
     def auto_protect(self):
         """偵測到爆音就自動加大緩衝重新連線：128 → 256 → 512（最多到 512，避免延遲太大）。"""
