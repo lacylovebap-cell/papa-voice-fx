@@ -127,9 +127,11 @@ a.preset("sing")
 a.open_mixer("rv", 1); root.update()
 check("混音台：混響編輯器有深度、殘響長度、明亮度、預延遲、立體寬度、低頻清除",
       all(k in a.mixer.knobs for k in ("mix", "size", "bright", "pre", "width", "lowcut")))
-a.open_mixer("align"); root.update()
-check("混音台：伴奏對齊旋鈕", "bgm_trim" in a.mixer.knobs)
+check("主畫面：伴奏旁邊有對齊、避讓", hasattr(a.bgm_trim, "_fmt") and hasattr(a.polish["duck"], "_fmt"))
+check("細調頁：左邊只有 5 項（效果、混響 A／B／C、人聲質感），不重複放音量推桿",
+      len(a.mixer.nav) == 5 and not hasattr(a.mixer, "meters"))
 a.open_mixer("card"); root.update()
+check("不存在的細調項目會回到效果細調（不會壞掉）", a.mixer.editing == ("fx", None))
 a.nb.select(0)
 # 我的設定（自己取名字）
 from tkinter import simpledialog
@@ -174,7 +176,7 @@ a.load_scene("CD 測試")
 check("我的設定也會記住人聲質感", fx.params["loud"] == 0.5 and fx.params["widen"] == 0.6)
 a.delete_scene("CD 測試")
 a.open_mixer("polish"); root.update()
-check("細調頁：人聲質感旋鈕（響度、清晰度、厚度、加寬）", all(k in a.mixer.knobs for k in ("loud", "clarity", "thick", "widen")))
+check("細調頁：人聲質感旋鈕（響度、清晰度、厚度、加寬、去齒音）", all(k in a.mixer.knobs for k in ("loud", "clarity", "thick", "widen", "deess")))
 a.nb.select(0)
 for k in app.POLISH:
     a.polish[k].set(0)

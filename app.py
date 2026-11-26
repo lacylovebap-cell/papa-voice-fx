@@ -279,12 +279,11 @@ class App:
         self.reverb_names = list(REVERB_NAMES)
         self.polish = {k: self.var("pol_" + k, 0, D) for k in POLISH}
         self.deess = self.var("deess", 40, D)
-        self.g_dry = self.var("g_dry", 0, D)
+        self.g_dry = self.var("g_dry", 0, D, remember=False)   # 耳機混原聲：已不需要（變聲延遲很低），固定 0
         self.el_style = self.var("el_style3", "電音")
         if self.el_style.get() not in EL_STYLES:
             self.el_style.set("電音")
         self._style_applied = self.el_style.get()
-        self.color = tk.StringVar(value="原本")   # 音色跟著效果走（不另外選）
         # 效果的即時參數（由效果按鈕＋細調決定）
         self.fxv = {}
         for k, v in NEUTRAL.items():
@@ -325,9 +324,9 @@ class App:
             pass
         # ---- 深色主題（分頁、拉桿、下拉選單、捲軸都改成石墨灰）
         st.configure(".", background=C_BG, foreground=C_TXT, bordercolor=C_LINE, lightcolor=C_CARD, darkcolor=C_DEEP,
-                     troughcolor=C_DEEP, focuscolor=C_ACCENT, font=(FONT, 10))
+                     troughcolor=C_DEEP, focuscolor=C_ACCENT, font=(FONT, 9))
         st.configure("TNotebook", background=C_DEEP, borderwidth=0, tabmargins=(8, 6, 8, 0))
-        st.configure("TNotebook.Tab", background=C_CARD, foreground=C_SUB, padding=(18, 6), font=(FONT, 11, "bold"),
+        st.configure("TNotebook.Tab", background=C_CARD, foreground=C_SUB, padding=(16, 4), font=(FONT, 10, "bold"),
                      bordercolor=C_LINE, lightcolor=C_CARD)
         st.map("TNotebook.Tab", background=[("selected", C_BG)], foreground=[("selected", C_ACCENT)],
                lightcolor=[("selected", C_ACCENT)])
@@ -342,7 +341,7 @@ class App:
         self.root.option_add("*TCombobox*Listbox.background", C_CARD)
         self.root.option_add("*TCombobox*Listbox.foreground", C_TXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", C_ACCENT)
-        self.root.option_add("*TCombobox*Listbox.font", (FONT, 10))
+        self.root.option_add("*TCombobox*Listbox.font", (FONT, 9))
         st.configure("Vertical.TScrollbar", background=C_BTN, troughcolor=C_DEEP, arrowcolor=C_SUB, bordercolor=C_DEEP,
                      lightcolor=C_BTN, darkcolor=C_BTN)
         # 微透明（進階設定可以調）
@@ -375,71 +374,75 @@ class App:
         self.wrap = wrap
         # 視窗大小：不超過螢幕高度
         sh = self.root.winfo_screenheight()
-        self.root.geometry("1040x%d" % max(500, min(920, sh - 80)))
+        self.root.geometry("1000x%d" % max(500, min(860, sh - 80)))
 
-        # ---- 頂部：開始＋聲卡變音
+        # ---- 頂部：開始＋變聲＋小狀態框（唱的音 → 送出去的音、目前功能）
         top = tk.Frame(wrap, bg=C_BG)
         top.pack(fill="x")
-        self.btn_start = self.button(top, "▶ 開始", self.toggle, color=C_ACCENT, fg="white", size=16, width=8)
-        self.btn_start.pack(side="left")
-        self.btn_card = self.button(top, "", self.toggle_card, size=13)
-        self.btn_card.pack(side="left", padx=10, fill="x", expand=True)
-        self.msg = self.label(wrap, "戴好耳機，按「開始」。", 10, C_SUB, anchor="w")
-        self.msg.pack(fill="x", pady=(6, 6))
-
-        # ---- 狀態面板：一眼看懂現在的聲音
-        sp = tk.Frame(wrap, bg=C_DEEP, padx=14, pady=10, highlightthickness=1, highlightbackground=C_LINE)
-        sp.pack(fill="x", pady=(0, 8))
-        r1 = tk.Frame(sp, bg=C_DEEP); r1.pack(fill="x")
-        self.label(r1, "你唱的音", 10, C_SUB).grid(row=0, column=0, sticky="w")
-        self.label(r1, "", 10, C_SUB).grid(row=0, column=1, padx=18)
-        self.label(r1, "送出去的音", 10, C_SUB).grid(row=0, column=2, sticky="w")
-        self.st_in = self.label(r1, "—", 26, C_CYAN, True, width=5, anchor="w")
-        self.st_in.grid(row=1, column=0, sticky="w")
-        self.label(r1, "→", 22, C_SUB).grid(row=1, column=1, padx=18)
-        self.st_out = self.label(r1, "—", 26, C_PINK, True, width=5, anchor="w")
-        self.st_out.grid(row=1, column=2, sticky="w")
-        self.st_diff = self.label(r1, "", 11, C_SUB, justify="left", anchor="w")
-        self.st_diff.grid(row=1, column=3, sticky="w", padx=(18, 0))
-        self.st_funcs = self.label(sp, "", 12, C_TXT, True, anchor="w", justify="left")
-        self.st_funcs.pack(fill="x", pady=(8, 0))
+        self.btn_start = self.button(top, "▶ 開始", self.toggle, color=C_ACCENT, fg="white", size=12, width=7)
+        self.btn_start.pack(side="left", fill="y")
+        self.btn_card = self.button(top, "", self.toggle_card, size=10)
+        self.btn_card.pack(side="left", padx=8, fill="both", expand=True)
+        sp = tk.Frame(top, bg=C_DEEP, padx=10, pady=4, highlightthickness=1, highlightbackground=C_LINE)
+        sp.pack(side="left", fill="y")
+        r1 = tk.Frame(sp, bg=C_DEEP)
+        r1.pack(anchor="w")
+        self.label(r1, "唱", 8, C_SUB).pack(side="left")
+        self.st_in = self.label(r1, "—", 13, C_CYAN, True, width=4, anchor="w")
+        self.st_in.pack(side="left")
+        self.label(r1, "→ 送", 8, C_SUB).pack(side="left")
+        self.st_out = self.label(r1, "—", 13, C_PINK, True, width=4, anchor="w")
+        self.st_out.pack(side="left")
+        self.st_diff = self.label(r1, "", 8, C_SUB, anchor="w")
+        self.st_diff.pack(side="left", padx=(4, 0))
+        self.st_funcs = self.label(sp, "", 8, C_SUB, anchor="w")
+        self.st_funcs.pack(anchor="w")
+        self.msg = self.label(wrap, "戴好耳機，按「開始」。", 9, C_SUB, anchor="w")
+        self.msg.pack(fill="x", pady=(4, 6))
 
         # ---- 聲音管道：名稱／裝置／音量／跳動波形
-        box = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
+        box = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
         box.pack(fill="x")
-        self.label(box, "聲音管道（有聲音時，右邊會跳動）", 11, C_ACCENT, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
+        self.label(box, "聲音管道", 10, C_ACCENT, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 4))
         self.cb_in = self._row(box, 1, "🎙 麥克風", self.dev_in, self.g_in, 200, C_CYAN, "inp")
         self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 150, C_GREEN, "mon")
         self.cb_out = self._row(box, 3, "📡 直播", self.dev_out, self.g_out, 150, C_PINK, "out")
         self.cb_bgm = self._row(box, 4, "🎵 伴奏", self.dev_bgm, self.g_bgm, 150, C_YELLOW, "bgm")
         bgmrow = tk.Frame(box, bg=C_CARD)
-        bgmrow.grid(row=5, column=1, columnspan=4, sticky="w", pady=(6, 0))
-        self.btn_bgm = self.button(bgmrow, "", self.toggle_bgm, size=10)
+        bgmrow.grid(row=5, column=1, columnspan=4, sticky="w", pady=(4, 0))
+        self.btn_bgm = self.button(bgmrow, "", self.toggle_bgm, size=9)
         self.btn_bgm.pack(side="left")
-        self.button(bgmrow, "❓ 伴奏怎麼接", lambda: messagebox.showinfo("伴奏怎麼接", BGM_HELP), size=10).pack(side="left", padx=8)
-        # 伴奏對齊：直播裡人聲和伴奏沒貼齊時調這裡
-        al = tk.Frame(box, bg=C_CARD)
-        al.grid(row=6, column=1, columnspan=4, sticky="w", pady=(6, 0))
-        self.label(al, "⏱ 對齊", 10, C_TXT, True).pack(side="left")
-        ttk.Scale(al, from_=-150, to=150, variable=self.bgm_trim, orient="horizontal", length=170,
-                  command=lambda v: self.on_trim()).pack(side="left", padx=(6, 2))
-        vl = self.label(al, "", 9, C_SUB, width=7)
+        self.button(bgmrow, "❓ 怎麼接", lambda: messagebox.showinfo("伴奏怎麼接", BGM_HELP), size=9).pack(side="left", padx=(6, 16))
+        # 伴奏對齊＋避讓（直播裡伴奏和人聲更貼合）
+        self.label(bgmrow, "⏱ 對齊", 9, C_TXT, True).pack(side="left")
+        ttk.Scale(bgmrow, from_=-150, to=150, variable=self.bgm_trim, orient="horizontal", length=130,
+                  command=lambda v: self.on_trim()).pack(side="left", padx=(4, 2))
+        vl = self.label(bgmrow, "", 8, C_SUB, width=7)
         vl.pack(side="left")
         self.bgm_trim._fmt = (vl, "{:+.0f} ms")
-        self.button(al, "↺", lambda: (self.bgm_trim.set(0), self.on_trim()), size=8).pack(side="left", padx=(0, 18))
-        self.label(al, "🎚 避讓", 10, C_TXT, True).pack(side="left")
-        ttk.Scale(al, from_=0, to=100, variable=self.polish["duck"], orient="horizontal", length=140,
-                  command=lambda v: self.apply()).pack(side="left", padx=(6, 2))
-        vl = self.label(al, "", 9, C_SUB, width=5)
+        self.button(bgmrow, "↺", lambda: (self.bgm_trim.set(0), self.on_trim()), size=8).pack(side="left", padx=(0, 12))
+        self.label(bgmrow, "🎚 避讓", 9, C_TXT, True).pack(side="left")
+        ttk.Scale(bgmrow, from_=0, to=100, variable=self.polish["duck"], orient="horizontal", length=100,
+                  command=lambda v: self.apply()).pack(side="left", padx=(4, 2))
+        vl = self.label(bgmrow, "", 8, C_SUB, width=5)
         vl.pack(side="left")
         self.polish["duck"]._fmt = (vl, "{:.0f}%")
         self.label(box, "對齊：錄一段邊聽邊拉，人聲比伴奏慢＝往右、快＝往左。避讓：唱歌時伴奏自動讓開一點，人聲更貼合。",
-                   9, C_SUB, anchor="w").grid(row=7, column=1, columnspan=4, sticky="w")
+                   8, C_SUB, anchor="w").grid(row=6, column=1, columnspan=4, sticky="w", pady=(2, 0))
 
         # ---- 效果
-        fx = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
-        fx.pack(fill="x", pady=10)
-        self.label(fx, "效果（再按一次＝關掉）", 11, C_ACCENT, True).pack(anchor="w", pady=(0, 2))
+        fx = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
+        fx.pack(fill="x", pady=8)
+        hdr = tk.Frame(fx, bg=C_CARD)
+        hdr.pack(fill="x", pady=(0, 2))
+        self.label(hdr, "效果（再按一次＝關掉）", 10, C_ACCENT, True).pack(side="left")
+        self.label(hdr, "電音風格", 9, C_SUB).pack(side="left", padx=(16, 4))
+        c1 = ttk.Combobox(hdr, textvariable=self.el_style, values=list(EL_STYLES), state="disabled", width=11)
+        c1.pack(side="left")
+        c1.bind("<<ComboboxSelected>>", lambda e: self.on_style())
+        self.cb_style = c1
+        self.style_hint = self.label(hdr, "（先按「⚡ 電音」）", 8, C_SUB)
+        self.style_hint.pack(side="left", padx=4)
         self.now_label = self.label(fx, "", 1, C_CARD)   # 保留給測試用（不顯示內容）
         row = tk.Frame(fx, bg=C_CARD)
         row.pack(fill="x")
@@ -448,11 +451,11 @@ class App:
 
         def fx_button(txt, cmd, hk):
             cell = tk.Frame(row, bg=C_CARD)
-            cell.pack(side="left", expand=True, fill="x", padx=3)
-            lab = self.label(cell, "Ctrl+Alt+" + hk, 8, C_SUB)
+            cell.pack(side="left", expand=True, fill="x", padx=2)
+            lab = self.label(cell, "Ctrl+Alt+" + hk, 7, C_SUB)
             lab.pack()
-            b = self.button(cell, txt, cmd, size=10)
-            b.config(pady=4, padx=6)
+            b = self.button(cell, txt, cmd, size=9)
+            b.config(pady=3, padx=4)
             b.pack(fill="x")
             return b, lab
         self.btn_none, self.none_hk = fx_button("✋ 無效果", self.clear_fx, "0")
@@ -461,102 +464,84 @@ class App:
             self.preset_btns[key] = b
             self.preset_hk[key] = lab
         cell = tk.Frame(row, bg=C_CARD)
-        cell.pack(side="left", padx=(8, 3))
-        self.label(cell, "每個都能調", 8, C_SUB).pack()
-        tb = self.button(cell, "🎛 細調", lambda: self.open_mixer("fx"), color="#2c4a63", size=10)
-        tb.config(pady=4, padx=6)
+        cell.pack(side="left", padx=(6, 2))
+        self.label(cell, "", 7, C_SUB).pack()
+        tb = self.button(cell, "🎛 細調", lambda: self.open_mixer("fx"), color="#2c4a63", size=9)
+        tb.config(pady=3, padx=6)
         tb.pack(fill="x")
-        # 混響 A／B／C、去齒音：和效果完全分開，切換任何效果都不會跑掉，按效果也不會自己加混響
+
+        # 混響 A／B／C＋人聲質感：和效果完全分開，切換效果不會改變，按效果也不會自己加混響
         fixed = tk.Frame(fx, bg=C_CARD)
-        fixed.pack(fill="x", pady=(10, 0))
+        fixed.pack(fill="x", pady=(8, 0))
         for i in range(3):
-            self.label(fixed, "🌫 混響 " + "ABC"[i], 11, C_TXT, True).grid(row=i, column=0, sticky="w", pady=1)
-            cb = ttk.Combobox(fixed, textvariable=self.rv[i]["type"], values=["關"] + REVERB_NAMES, state="readonly", width=7)
+            self.label(fixed, "🌫 混響 " + "ABC"[i], 9, C_TXT, True).grid(row=i, column=0, sticky="w", pady=1)
+            cb = ttk.Combobox(fixed, textvariable=self.rv[i]["type"], values=["關"] + REVERB_NAMES, state="readonly", width=11)
             cb.grid(row=i, column=1, padx=6)
             cb.bind("<<ComboboxSelected>>", lambda e, k=i: self.on_reverb_type(k))
-            self.label(fixed, "深度", 9, C_SUB).grid(row=i, column=2)
-            ttk.Scale(fixed, from_=0, to=100, variable=self.rv[i]["mix"], orient="horizontal", length=170,
-                      command=lambda _v: self.apply()).grid(row=i, column=3, padx=4)
-            vl = self.label(fixed, "", 10, C_SUB, width=5)
-            vl.grid(row=i, column=4)
+            ttk.Scale(fixed, from_=0, to=100, variable=self.rv[i]["mix"], orient="horizontal", length=150,
+                      command=lambda _v: self.apply()).grid(row=i, column=2, padx=4)
+            vl = self.label(fixed, "", 8, C_SUB, width=5)
+            vl.grid(row=i, column=3)
             self.rv[i]["mix"]._fmt = (vl, "{:.0f}%")
-            self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=9).grid(row=i, column=5, padx=4)
-        self.label(fixed, "🦷 去齒音", 11, C_TXT, True).grid(row=0, column=6, sticky="w", padx=(24, 6))
-        ttk.Scale(fixed, from_=0, to=100, variable=self.deess, orient="horizontal", length=140,
-                  command=lambda _v: self.apply()).grid(row=0, column=7)
-        vl = self.label(fixed, "", 10, C_SUB, width=5)
-        vl.grid(row=0, column=8)
-        self.deess._fmt = (vl, "{:.0f}%")
-        self.label(fx, "↑ 混響和去齒音所有效果共用：你拉多少就是多少，切換效果不會變；深度拉到 0＝沒有混響。⚙＝更多細調（殘響長度、明亮度、立體寬度…）",
-                   9, C_SUB, anchor="w", justify="left", wraplength=900).pack(fill="x")
-        pol = tk.Frame(fx, bg=C_CARD)
-        pol.pack(fill="x", pady=(8, 0))
-        self.label(pol, "✨ 人聲質感", 11, C_TXT, True).grid(row=0, column=0, sticky="w")
-        for n, k in enumerate(("loud", "clarity", "thick")):
-            self.label(pol, POLISH_NAMES[k], 9, C_SUB).grid(row=0, column=1 + n * 3, padx=(10, 2))
-            ttk.Scale(pol, from_=0, to=100, variable=self.polish[k], orient="horizontal", length=120,
-                      command=lambda _v: self.apply()).grid(row=0, column=2 + n * 3)
-            vl = self.label(pol, "", 9, C_SUB, width=5)
-            vl.grid(row=0, column=3 + n * 3)
-            self.polish[k]._fmt = (vl, "{:.0f}%")
-        self.button(pol, "✨ 一鍵 CD 質感", self.apply_cd_template, color="#2c4a63", size=10).grid(row=0, column=10, padx=(10, 4))
-        self.button(pol, "⚙", lambda: self.open_mixer("polish"), size=9).grid(row=0, column=11)
-        self.label(fx, "↑ 讓人聲在手機、耳機上都大聲清楚好聽：響度＝自動把音量穩住，清晰度＝更清楚有空氣感，厚度＝更飽滿（預設都是 0，不會改到你現在的聲音）",
-                   9, C_SUB, anchor="w", justify="left", wraplength=900).pack(fill="x")
-        el = tk.Frame(fx, bg=C_CARD)
-        el.pack(fill="x", pady=(8, 0))
-        self.label(el, "電音風格：", 10).pack(side="left")
-        c1 = ttk.Combobox(el, textvariable=self.el_style, values=list(EL_STYLES), state="disabled", width=14)
-        c1.pack(side="left")
-        c1.bind("<<ComboboxSelected>>", lambda e: self.on_style())
-        self.cb_style = c1
-        self.style_hint = self.label(el, "（先按「⚡ 電音」才能選）", 9, C_SUB)
-        self.style_hint.pack(side="left", padx=6)
-
-        self.label(fx, "修音和電音都會跟著你唱的歌自動判斷調，不用選調。\n自然修音＝只把走音拉回來，保留顫音和滑音；電音＝電音人聲（風格由軟到硬可選）。\n兩個都已經包含人聲修飾的音色，不用另外調。",
-                   9, C_SUB, justify="left", anchor="w").pack(fill="x", pady=(4, 0))
-        self.note_label = self.label(fx, "", 1, C_CARD)
+            self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=8).grid(row=i, column=4, padx=2)
+        pol = tk.Frame(fixed, bg=C_CARD)
+        pol.grid(row=0, column=5, rowspan=3, sticky="nw", padx=(18, 0))
+        self.label(pol, "🎤 人聲質感", 9, C_TXT, True).grid(row=0, column=0, columnspan=3, sticky="w")
+        for n, (k, var) in enumerate((("loud", self.polish["loud"]), ("clarity", self.polish["clarity"]),
+                                      ("thick", self.polish["thick"]), ("deess", self.deess))):
+            r, c = 1 + n // 2, (n % 2) * 3
+            self.label(pol, POLISH_NAMES.get(k, "去齒音"), 8, C_SUB).grid(row=r, column=c, sticky="e", padx=(0 if c == 0 else 8, 2))
+            ttk.Scale(pol, from_=0, to=100, variable=var, orient="horizontal", length=90,
+                      command=lambda _v: self.apply()).grid(row=r, column=c + 1)
+            vl = self.label(pol, "", 8, C_SUB, width=4)
+            vl.grid(row=r, column=c + 2)
+            var._fmt = (vl, "{:.0f}%")
+        pb = tk.Frame(pol, bg=C_CARD)
+        pb.grid(row=0, column=3, columnspan=3, sticky="e")
+        self.button(pb, "✨ 一鍵 CD 質感", self.apply_cd_template, color="#2c4a63", size=8).pack(side="left")
+        self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
+        self.label(fx, "混響和人聲質感：所有效果共用，切換效果不會變，按效果也不會自己加混響。⚙＝更多細調。",
+                   8, C_SUB, anchor="w").pack(fill="x", pady=(4, 0))
 
         # ---- 錄音
-        rc = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
+        rc = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
         rc.pack(fill="x")
-        self.label(rc, "錄音（每錄一段就先暫存在下面清單，想存再存）", 11, C_ACCENT, True).pack(anchor="w", pady=(0, 6))
+        self.label(rc, "錄音（每錄一段先暫存在清單，想存再存）", 10, C_ACCENT, True).pack(anchor="w", pady=(0, 4))
         row = tk.Frame(rc, bg=C_CARD)
         row.pack(fill="x")
-        self.btn_rec = self.button(row, "● 錄音", self.toggle_rec, size=12)
-        self.btn_rec.pack(side="left", expand=True, fill="x", padx=3)
-        self.btn_play_wet = self.button(row, "▶ 聽選的那段", lambda: self.play("wet"), size=12)
-        self.btn_play_wet.pack(side="left", expand=True, fill="x", padx=3)
-        self.button(row, "💾 存檔", self.save_rec, size=12).pack(side="left", expand=True, fill="x", padx=3)
-        self.button(row, "🗑 刪除", self.delete_take, size=12).pack(side="left", expand=True, fill="x", padx=3)
-        self.takes = []          # 暫存的錄音：每段 {name, wet, dry, secs}
+        self.btn_rec = self.button(row, "● 錄音", self.toggle_rec, size=9)
+        self.btn_rec.pack(side="left", expand=True, fill="x", padx=2)
+        self.btn_play_wet = self.button(row, "▶ 聽選的那段", lambda: self.play("wet"), size=9)
+        self.btn_play_wet.pack(side="left", expand=True, fill="x", padx=2)
+        self.button(row, "💾 存檔", self.save_rec, size=9).pack(side="left", expand=True, fill="x", padx=2)
+        self.button(row, "🗑 刪除", self.delete_take, size=9).pack(side="left", expand=True, fill="x", padx=2)
+        self.takes = []          # 暫存的錄音：每段 {name, wet, dry, voice, bgm, secs, trim}
         self._take_no = 0
-        self.take_list = tk.Listbox(rc, height=4, bg=C_DEEP, fg=C_TXT, selectbackground=C_ACCENT,
-                                    selectforeground="white", font=(FONT, 10), activestyle="none", bd=0,
+        self.take_list = tk.Listbox(rc, height=3, bg=C_DEEP, fg=C_TXT, selectbackground=C_ACCENT,
+                                    selectforeground="white", font=(FONT, 9), activestyle="none", bd=0,
                                     highlightthickness=0, exportselection=False)
-        self.take_list.pack(fill="x", pady=(6, 0))
+        self.take_list.pack(fill="x", pady=(4, 0))
         self.take_list.bind("<Double-Button-1>", lambda e: self.play("wet"))
-        self.rec_label = self.label(rc, "還沒錄音（雙擊清單裡的某一段也可以直接聽）", 10, C_SUB, anchor="w")
-        self.rec_label.pack(fill="x", pady=(6, 0))
+        self.rec_label = self.label(rc, "還沒錄音（雙擊清單裡的某一段也可以直接聽）", 8, C_SUB, anchor="w")
+        self.rec_label.pack(fill="x", pady=(4, 0))
 
         # ---- 進階（預設收起來）
         self.adv_open = False
-        self.btn_adv = self.button(wrap, "⚙ 進階設定 ▸", self.toggle_adv, color=C_BG, fg=C_SUB, size=10)
-        self.btn_adv.pack(anchor="w", pady=(10, 0))
-        self.adv = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
+        self.btn_adv = self.button(wrap, "⚙ 進階設定 ▸", self.toggle_adv, color=C_BG, fg=C_SUB, size=9)
+        self.btn_adv.config(highlightthickness=0)
+        self.btn_adv.pack(anchor="w", pady=(8, 0))
+        self.adv = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
         tk.Checkbutton(self.adv, text="超低延遲（有爆音就取消勾選）", variable=self.ultra, bg=C_CARD, fg=C_TXT,
-                       selectcolor=C_DEEP, activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
+                       selectcolor=C_DEEP, activebackground=C_CARD, font=(FONT, 9)).grid(row=0, column=0, columnspan=3, sticky="w")
         tk.Checkbutton(self.adv, text="專屬模式：開機自動開「變聲」，關掉前會再確認（怕怕專用，其他歌手不用勾）",
                        variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP,
-                       activebackground=C_CARD, font=(FONT, 10)).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
-        self._slider(self.adv, 7, "視窗透明度（微透明）", self.alpha, 70, 100, "{:.0f}%")
-        self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
-        self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
-        self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：0 無效果　1 說話　2 修音　3 電音　4 電話　5 答錄機　7 機器人　6 變聲　B 伴奏　R 錄音　F1～F8 我的設定",
-                               9, C_SUB, anchor="w")
-        self.hint.pack(fill="x", pady=(8, 0))
+                       activebackground=C_CARD, font=(FONT, 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self._slider(self.adv, 2, "視窗透明度（微透明）", self.alpha, 70, 100, "{:.0f}%")
+        self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=9).grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.status = self.label(self.adv, "", 8, C_SUB, justify="left", anchor="w")
+        self.status.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.hint = self.label(wrap, "其他快捷鍵 Ctrl+Alt+：6 變聲　B 伴奏　R 錄音　F1～F8 我的設定", 8, C_SUB, anchor="w")
+        self.hint.pack(fill="x", pady=(6, 0))
         # ---- 第二頁：混音台
         self.mixer = mixer.MixerPage(self.nb, self)
         self.nb.add(self.mixer, text="🎛 細調")
@@ -564,13 +549,13 @@ class App:
         self.refresh_scene_bar()
 
     def _row(self, box, r, name, dev_var, gain_var, gmax, color, key):
-        self.label(box, name, 11, C_TXT, True, width=8, anchor="w").grid(row=r, column=0, sticky="w", pady=3)
-        cb = ttk.Combobox(box, textvariable=dev_var, state="readonly", width=30)
+        self.label(box, name, 9, C_TXT, True, width=8, anchor="w").grid(row=r, column=0, sticky="w", pady=2)
+        cb = ttk.Combobox(box, textvariable=dev_var, state="readonly", width=32)
         cb.grid(row=r, column=1, sticky="we", padx=6)
         cb.bind("<<ComboboxSelected>>", lambda e: self.on_device_change())
         ttk.Scale(box, from_=0, to=gmax, variable=gain_var, orient="horizontal", length=110,
                   command=lambda v: self.apply()).grid(row=r, column=2, padx=4)
-        val = self.label(box, "", 9, C_SUB, width=5)
+        val = self.label(box, "", 8, C_SUB, width=5)
         val.grid(row=r, column=3)
         gain_var._fmt = (val, "{:.0f}%")
         wv = Wave(box, color)
@@ -579,7 +564,7 @@ class App:
         return cb
 
     def _slider(self, parent, r, text, var, lo, hi, fmt):
-        self.label(parent, text, 10).grid(row=r, column=0, sticky="w", pady=2)
+        self.label(parent, text, 9).grid(row=r, column=0, sticky="w", pady=2)
         ttk.Scale(parent, from_=lo, to=hi, variable=var, orient="horizontal", length=200,
                   command=lambda v: self.apply()).grid(row=r, column=1, padx=6)
         val = self.label(parent, "", 9, C_SUB, width=7)
@@ -1002,23 +987,23 @@ class App:
         bar = self.scene_bar
         for w in bar.winfo_children():
             w.destroy()
-        tk.Label(bar, text="💾 我的設定", bg=bar["bg"], fg=C_ACCENT, font=(FONT, 10, "bold")).pack(side="left", padx=(0, 8))
+        tk.Label(bar, text="💾 我的設定", bg=bar["bg"], fg=C_ACCENT, font=(FONT, 9, "bold")).pack(side="left", padx=(0, 8))
         self.scene_btns = {}
         for n, name in enumerate(self.scenes):
             on = name == self.current_scene
             c = C_ACCENT if on else C_BTN
             txt = ("F%d " % (n + 1) if n < 8 else "") + name
             b = tk.Button(bar, text=txt, command=lambda k=name: self.load_scene(k), bg=c, fg="white" if on else C_TXT,
-                          activebackground=c, relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2)
+                          activebackground=c, relief="flat", font=(FONT, 9, "bold"), cursor="hand2", bd=0, padx=8, pady=2)
             b.pack(side="left", padx=2)
             b.bind("<Button-3>", lambda e, k=name: self.scene_menu(k, e))
             self.scene_btns[name] = b
         tk.Button(bar, text="＋ 存目前設定", command=self.save_scene, bg="#2c4a63", fg=C_TXT, activebackground="#2c4a63",
-                  relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2).pack(side="left", padx=(8, 4))
+                  relief="flat", font=(FONT, 9, "bold"), cursor="hand2", bd=0, padx=8, pady=2).pack(side="left", padx=(8, 4))
         if self.scenes:
-            tk.Label(bar, text="（按一下＝切換；右鍵＝覆蓋／改名／刪除）", bg=bar["bg"], fg=C_SUB, font=(FONT, 9)).pack(side="left")
+            tk.Label(bar, text="按一下＝切換，右鍵＝覆蓋／改名／刪除", bg=bar["bg"], fg=C_SUB, font=(FONT, 8)).pack(side="left")
         else:
-            tk.Label(bar, text="把現在的效果＋細調＋混響存起來、取名字，之後一鍵切換", bg=bar["bg"], fg=C_SUB, font=(FONT, 9)).pack(side="left")
+            tk.Label(bar, text="把現在的效果＋細調＋混響存起來取名字，之後一鍵切換", bg=bar["bg"], fg=C_SUB, font=(FONT, 8)).pack(side="left")
 
     def on_personal(self):
         if self.personal.get():
@@ -1053,7 +1038,7 @@ class App:
                             fg=C_DARKTXT if b else C_TXT)
         el_on = self.active_preset == "electro"
         self.cb_style.config(state="readonly" if el_on else "disabled")
-        self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」才能選）")
+        self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」）")
         none = self.active_preset is None
         c = C_ACCENT if none else C_BTN
         self.btn_none.config(bg=c, activebackground=c, fg="white" if none else C_TXT)
@@ -1065,13 +1050,13 @@ class App:
         col = ""
         self.now_label.config(text="現在送出去的聲音 ＝ %s ＋ %s%s%s" % (voice, fxname, extra, col))
         mark = lambda ok: "✅" if ok else "⬜"
-        kind = {"talk": "說話（只修飾音色，不修音）", "sing": "自然修音（拉準走音、保留顫音）",
-                "electro": "電音人聲（%s）" % self.el_style.get(), "phone": "電話音", "machine": "答錄機音",
-                "robot": "機器人聲"}
-        self.st_funcs.config(text="目前功能：　%s 變聲　　%s %s　　%s 伴奏" % (
+        kind = {"talk": "說話", "sing": "自然修音", "electro": "電音（%s）" % self.el_style.get(),
+                "phone": "電話", "machine": "答錄機", "robot": "機器人"}
+        sc = ("　💾 " + self.current_scene) if self.current_scene else ""
+        self.st_funcs.config(text="%s 變聲　%s %s　%s 伴奏%s" % (
             mark(on), mark(self.active_preset is not None),
-            kind.get(self.active_preset, "沒有修音、沒有電音（一般聲音）"), mark(bool(self.bgm_on.get()))),
-            fg=C_TXT if (on or not self.personal.get()) else C_YELLOW)
+            kind.get(self.active_preset, "無效果"), mark(bool(self.bgm_on.get())), sc),
+            fg=C_SUB if (on or not self.personal.get()) else C_YELLOW)
         for k, btn in self.preset_btns.items():
             c = C_ACCENT if self.active_preset == k else C_BTN
             btn.config(bg=c, activebackground=c, fg="white" if self.active_preset == k else C_TXT)
@@ -1242,11 +1227,7 @@ class App:
         run = e.running
         for k in ("inp", "mon", "out", "bgm"):
             getattr(self, "wave_" + k).push(e.lv[k] if run else 0.0)
-        try:
-            if str(self.nb.select()) == str(self.mixer):
-                self.mixer.push_levels(e.lv, run)
-        except Exception:
-            pass
+
         if run:
             f, det, tgt = e.info
             if det is not None and e.fx is not None:
