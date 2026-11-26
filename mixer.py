@@ -158,8 +158,8 @@ class MixerPage(tk.Frame):
         self.knobs = {}
         self.editing = None        # ("fx", None) / ("rv", i) / ("deess", None) / ("card", None) / ("align", None)
         self.dirty = False
-        label(self, "🎛 混音台　每條通道都能推；點通道上的效果，右邊就能用旋鈕細調（雙擊旋鈕＝恢復預設，按住 Shift 拖曳＝更細）",
-              10, SUB, anchor="w").pack(fill="x", pady=(0, 6))
+        label(self, "每條通道都能推；點通道上的效果，右邊就能用旋鈕細調（旋鈕：上下拖曳調整、雙擊＝恢復預設、按住 Shift＝更細）",
+              9, SUB, anchor="w").pack(fill="x", pady=(0, 6))
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True)
         self.strips = tk.Frame(body, bg=BG)
@@ -171,7 +171,7 @@ class MixerPage(tk.Frame):
 
     # ---- 通道
     def _strip(self, title, color, var, top, gmax, meter_key=None, fmt="{:.0f}%"):
-        f = tk.Frame(self.strips, bg=STRIP, padx=4, pady=6, width=92)
+        f = tk.Frame(self.strips, bg=STRIP, padx=3, pady=6, width=86)
         f.pack(side="left", fill="y", padx=2)
         f.pack_propagate(False)
         label(f, title, 10, color, True).pack()
@@ -239,12 +239,12 @@ class MixerPage(tk.Frame):
             w.destroy()
         self.knobs = {}
 
-    def _knob_grid(self, parent, items, cols=4):
+    def _knob_grid(self, parent, items, cols=3):
         """items: [(key, var, lo, hi, label, fmt, default, step)]"""
         g = tk.Frame(parent, bg=EDIT_BG)
         g.pack(fill="x", pady=(6, 0))
         for n, (key, var, lo, hi, lab, fmt, dflt, step, cb) in enumerate(items):
-            k = Knob(g, var, lo, hi, lab, fmt, dflt, cb, step=step)
+            k = Knob(g, var, lo, hi, lab, fmt, dflt, cb, step=step, size=70)
             k.grid(row=n // cols, column=n % cols, padx=2, pady=2)
             self.knobs[key] = k
         return g
@@ -264,7 +264,7 @@ class MixerPage(tk.Frame):
                     small_button(row, txt, lambda kk=k: (a.preset(kk), self.open_editor("fx"))).pack(side="left", padx=2)
                 return
             label(ed, "效果編輯器：%s" % a.preset_names[p], 12, PINK, True).pack(anchor="w")
-            label(ed, "這裡調的只影響「%s」，會自動記住；切到別的效果再切回來還在。" % a.preset_names[p], 9, SUB).pack(anchor="w")
+            label(ed, "這裡調的只影響「%s」，會自動記住；切到別的效果再切回來還在。" % a.preset_names[p], 9, SUB, wraplength=330, justify="left").pack(anchor="w")
             if p in ("electro", "sing"):
                 row = tk.Frame(ed, bg=EDIT_BG); row.pack(anchor="w", pady=(6, 0))
                 label(row, "套用參考預設：", 10).pack(side="left")
@@ -285,7 +285,7 @@ class MixerPage(tk.Frame):
             i = idx
             v = a.rv[i]
             label(ed, "混響 %s 編輯器" % "ABC"[i], 12, "#b79cff", True).pack(anchor="w")
-            label(ed, "混響和效果完全分開：所有效果共用，拉多少就是多少；深度拉到 0＝這層關掉。", 9, SUB).pack(anchor="w")
+            label(ed, "混響和效果完全分開：所有效果共用，拉多少就是多少；深度拉到 0＝這層關掉。", 9, SUB, wraplength=330, justify="left").pack(anchor="w")
             row = tk.Frame(ed, bg=EDIT_BG); row.pack(anchor="w", pady=(6, 0))
             label(row, "類型：", 10).pack(side="left")
             cb = ttk.Combobox(row, textvariable=v["type"], values=["關"] + a.reverb_names, state="readonly", width=8)
@@ -305,22 +305,22 @@ class MixerPage(tk.Frame):
                 ("lowcut", v["lowcut"], 0, 800, "低頻清除", lambda x: "關" if x < 20 else "{:.0f} Hz".format(x), d["lowcut"], 10, cbk),
             ]
             self._knob_grid(ed, items)
-            label(ed, "立體寬度只有耳機聽得出來（直播 App 通常是單聲道）。", 9, SUB).pack(anchor="w", pady=(6, 0))
+            label(ed, "立體寬度只有耳機聽得出來（直播 App 通常是單聲道）。", 9, SUB, wraplength=330, justify="left").pack(anchor="w", pady=(6, 0))
             row = tk.Frame(ed, bg=EDIT_BG); row.pack(anchor="w", pady=(6, 0))
             small_button(row, "↺ 恢復這個類型的預設", lambda: (a.on_reverb_type(i), self.open_editor("rv", i))).pack(side="left")
         elif kind == "deess":
             label(ed, "去齒音", 12, PINK, True).pack(anchor="w")
-            label(ed, "只在「嘶、ㄘ、ㄙ」這類刺耳的齒音出現時才壓下來，所有效果共用。", 9, SUB).pack(anchor="w")
+            label(ed, "只在「嘶、ㄘ、ㄙ」這類刺耳的齒音出現時才壓下來，所有效果共用。", 9, SUB, wraplength=330, justify="left").pack(anchor="w")
             self._knob_grid(ed, [("deess", a.deess, 0, 100, "去齒音", "{:.0f}%", 40, 1, lambda: a.apply())])
         elif kind == "card":
             label(ed, "🎭 變聲", 12, PINK, True).pack(anchor="w")
-            label(ed, "專屬變聲的參數是固定的（不會被任何細調改到）：\n升 1.5 半音、350 Hz −6 dB、3.2 kHz −5 dB。", 10, TXT, justify="left").pack(anchor="w", pady=6)
+            label(ed, "專屬變聲的參數是固定的（不會被任何細調改到）：\n升 1.5 半音、350 Hz −6 dB、3.2 kHz −5 dB。", 10, TXT, justify="left", wraplength=330).pack(anchor="w", pady=6)
             small_button(ed, "開／關 變聲", a.toggle_card, size=10).pack(anchor="w")
         elif kind == "align":
             label(ed, "⏱ 伴奏對齊", 12, YELLOW, True).pack(anchor="w")
             label(ed, "直播裡伴奏和人聲沒貼齊時調這裡（只影響直播和錄音，不影響你耳機裡聽到的）。\n"
                       "最準的方法：錄一段 → 播放 → 一邊聽一邊轉旋鈕，播放中就會即時改變。\n"
-                      "人聲比伴奏慢（拖拍）→ 往右轉；人聲比伴奏快（搶拍）→ 往左轉。", 9, SUB, justify="left").pack(anchor="w")
+                      "人聲比伴奏慢（拖拍）→ 往右轉；人聲比伴奏快（搶拍）→ 往左轉。", 9, SUB, justify="left", wraplength=330).pack(anchor="w")
             self._knob_grid(ed, [("bgm_trim", a.bgm_trim, -150, 150, "伴奏延後", "{:+.0f} ms", 0, 1, lambda: a.on_trim())])
         self.refresh()
 
