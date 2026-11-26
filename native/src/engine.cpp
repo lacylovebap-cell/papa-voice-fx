@@ -103,6 +103,10 @@ struct Engine {
     bool bgm_on = true;
     double bgm_trim_ms = 0;
     double duck = 0, duck_db = 0;   // 伴奏避讓：唱歌時伴奏自動讓開（最多 6 dB）
+    // 試聽：0＝耳機原本　1＝直播 App（單聲道）　2＝手機外放（單聲道＋小喇叭）。只影響耳機，直播不變
+    int mon_mode = 0;
+    Biquad phone_sim[4] = {Biquad(BQ_HP, 380, SR, 0, 0.8), Biquad(BQ_HP, 380, SR, 0, 0.8),
+                           Biquad(BQ_PEAKING, 2800, SR, 4.0, 1.0), Biquad(BQ_LP, 9000, SR, 0, 0.7)};
     double test_tone_hz = 0, test_tone_ph = 0;   // 測試用：用合成音代替麥克風
 
     Ring cable_ring{1 << 16};
@@ -179,6 +183,7 @@ struct Engine {
         else if (k == "bgm_on") bgm_on = v > 0.5;
         else if (k == "bgm_trim_ms") bgm_trim_ms = v;
         else if (k == "duck") duck = v;
+        else if (k == "mon_mode") mon_mode = std::max(0, std::min(2, (int)v));
         else if (k == "test_tone_hz") test_tone_hz = v;
         else if (fx) {
             TunerParams& t = fx->tuner.p;
@@ -331,10 +336,17 @@ struct Engine {
             for (int i = 0; i < frames; i++)
                 mon[i] = (tmp_y[i] + tmp_bg[i]) * g_mon + tmp_in[i] * g_dry * g_mon;
         }
+        if (mon_mode == 2) {   // 手機外放：小喇叭沒有低音、中高音突出
+            for (int i = 0; i < frames; i++) {
+                double v = mon[i];
+                for (auto& b : phone_sim) v = b.tick(v);
+                mon[i] = v * 1.4;
+            }
+        } else for (auto& b : phone_sim) b.reset();
         lim_mon.process(mon, frames);
         float pk_mon = 0;
         const float* sd = fx->side.data();
-        bool use_side = !playing.load() && (int)fx->side.size() >= frames;
+        bool use_side = mon_mode == 0 && !playing.load() && (int)fx->side.size() >= frames;
         for (int i = 0; i < frames; i++) {
             float v = (float)mon[i];
             pk_mon = std::max(pk_mon, std::fabs(v));

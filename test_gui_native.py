@@ -36,6 +36,18 @@ a.preset("electro")
 for _ in range(10):
     root.update(); time.sleep(0.05)
 check("切到電音後有修正目標音", a.eng.info[2] is not None)
+a.preset("electro")
+def mon_level(m):
+    a.set_listen(m)
+    vals = []
+    for _ in range(16):
+        root.update(); time.sleep(0.05)
+        vals.append(a.wave_mon.hist[-1])
+    return sum(vals[6:]) / len(vals[6:])
+l0, l2 = mon_level(0), mon_level(2)
+check("試聽「手機外放」：低音（220 Hz 測試音）被削弱", l2 < l0 * 0.7, "%.2f → %.2f" % (l0, l2))
+a.set_listen(0)
+a.preset("electro")
 # 錄兩段，暫存在清單
 for k in range(2):
     a.toggle_rec()

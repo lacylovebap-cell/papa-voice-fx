@@ -187,6 +187,12 @@ a.alpha.set(97); a.apply()
 a.g_mon.set(400); a.apply()
 check("耳機音量可以推到 400%", abs(a.eng.gains["mon"] - 4.0) < 1e-9)
 a.g_mon.set(100); a.apply()
+a.set_listen(1)
+check("試聽：直播 App 聽到的（只送試聽模式給引擎，直播參數不變）", fx.params["mon_mode"] == 1 and fx.params["card"] == bool(a.card.get()))
+a.set_listen(2)
+check("試聽：手機外放", fx.params["mon_mode"] == 2 and str(a.listen_btns[2].cget("bg")) == app.C_YELLOW)
+a.set_listen(0)
+check("試聽：回到原本", fx.params["mon_mode"] == 0)
 # 伴奏對齊：錄音分開存人聲和伴奏，播放時照目前的對齊重新混
 import numpy as _np
 v0 = _np.zeros(48000, _np.float32); b0 = _np.zeros(48000, _np.float32); b0[1000] = 0.5

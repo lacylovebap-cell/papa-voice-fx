@@ -368,6 +368,14 @@ class Engine:
                     self.play_data = None
             else:
                 mon = self.lim_mon.process((y + bg_mon) * self.gains["mon"] + dry * (self.gains["dry"] * self.gains["mon"]))
+                if int(self.params.get("mon_mode", 0)) == 2:     # 試聽：手機外放
+                    if getattr(self, "_phone_sim", None) is None:
+                        from dsp import Biquad
+                        self._phone_sim = [Biquad("hp", 380, SR, q=0.8), Biquad("hp", 380, SR, q=0.8),
+                                           Biquad("peaking", 2800, SR, 4.0, q=1.0), Biquad("lp", 9000, SR, q=0.7)]
+                    for f in self._phone_sim:
+                        mon = f(mon)
+                    mon = self.lim_mon.process(mon * 1.4)
             self.lv["mon"] = float(np.max(np.abs(mon))) if len(mon) else 0.0
             mon = np.clip(mon, -1.0, 1.0).astype(np.float32)
             if self.duplex:

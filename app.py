@@ -254,6 +254,7 @@ class App:
             self.card.set(1)
         self.ultra = self.var("ultra_v2", 0, tk.IntVar)
         self.alpha = self.var("alpha", 97, D)       # 視窗透明度（微透明）
+        self.listen = self.var("listen", 0, tk.IntVar, remember=False)   # 試聽：0 原本／1 直播 App／2 手機外放
         self.block_now = 128 if NATIVE else 256
         self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
@@ -429,6 +430,18 @@ class App:
         self.polish["duck"]._fmt = (vl, "{:.0f}%")
         self.label(box, "對齊：錄一段邊聽邊拉，人聲比伴奏慢＝往右、快＝往左。避讓：唱歌時伴奏自動讓開一點，人聲更貼合。",
                    8, C_SUB, anchor="w").grid(row=6, column=1, columnspan=4, sticky="w", pady=(2, 0))
+        # 試聽：用耳機聽聽看觀眾那邊的樣子（只改耳機，直播不受影響）
+        ls = tk.Frame(box, bg=C_CARD)
+        ls.grid(row=7, column=1, columnspan=4, sticky="w", pady=(6, 0))
+        self.label(ls, "👂 試聽", 9, C_TXT, True).pack(side="left", padx=(0, 6))
+        self.listen_btns = []
+        for m, txt in enumerate(("🎧 原本", "📱 直播 App 聽到的", "🔈 手機外放")):
+            b = self.button(ls, txt, lambda mm=m: self.set_listen(mm), size=8)
+            b.config(pady=2, padx=6)
+            b.pack(side="left", padx=2)
+            self.listen_btns.append(b)
+        self.listen_hint = self.label(ls, "只改你耳機聽到的，直播不受影響", 8, C_SUB)
+        self.listen_hint.pack(side="left", padx=8)
 
         # ---- 效果
         fx = tk.Frame(wrap, bg=C_CARD, padx=10, pady=8)
@@ -686,6 +699,7 @@ class App:
                   card=bool(self.card.get()), electro_fx=g("electro_fx") / 100, deess=float(self.deess.get()) / 100)
         for k in POLISH:
             kw[k] = float(self.polish[k].get()) / 100
+        kw["mon_mode"] = int(self.listen.get())
         for i, r in enumerate(self.rv):
             t = r["type"].get()
             n = "rv%d_" % (i + 1)
@@ -838,6 +852,13 @@ class App:
         if hasattr(self, "mixer") and str(self.nb.select()) == str(self.mixer) and getattr(self.mixer, "dirty", False):
             self.mixer.dirty = False
             self.mixer.open_editor(*self.mixer.editing)
+
+    def set_listen(self, m):
+        """試聽：耳機切換成「直播 App 聽到的（單聲道）」或「手機外放」；直播本身不受影響。"""
+        self.listen.set(m)
+        self.apply()
+        self.msg.config(text=("👂 正在試聽：" + ("直播 App 聽到的（單聲道，加寬和立體寬度會消失）" if m == 1 else "手機外放（低音少、中高音突出）")
+                              + "。聽完記得按「🎧 原本」。") if m else "已回到耳機原本的聲音。", fg=C_YELLOW if m else C_SUB)
 
     def open_mixer(self, kind="fx", idx=None):
         self.nb.select(self.mixer)
@@ -1036,6 +1057,11 @@ class App:
         c = C_GREEN if b else C_BTN
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
                             fg=C_DARKTXT if b else C_TXT)
+        if hasattr(self, "listen_btns"):
+            for m, b in enumerate(self.listen_btns):
+                on = int(self.listen.get()) == m
+                c = (C_ACCENT if m == 0 else C_YELLOW) if on else C_BTN
+                b.config(bg=c, activebackground=c, fg=("white" if m == 0 else C_DARKTXT) if on else C_TXT)
         el_on = self.active_preset == "electro"
         self.cb_style.config(state="readonly" if el_on else "disabled")
         self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」）")
