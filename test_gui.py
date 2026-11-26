@@ -184,6 +184,9 @@ a.preset("talk")
 a.alpha.set(90); a.apply()
 check("視窗透明度可以調", abs(float(a.alpha.get()) - 90) < 1e-9)
 a.alpha.set(97); a.apply()
+a.g_mon.set(400); a.apply()
+check("耳機音量可以推到 400%", abs(a.eng.gains["mon"] - 4.0) < 1e-9)
+a.g_mon.set(100); a.apply()
 # 伴奏對齊：錄音分開存人聲和伴奏，播放時照目前的對齊重新混
 import numpy as _np
 v0 = _np.zeros(48000, _np.float32); b0 = _np.zeros(48000, _np.float32); b0[1000] = 0.5

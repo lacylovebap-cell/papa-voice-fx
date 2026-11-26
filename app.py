@@ -405,7 +405,7 @@ class App:
         box.pack(fill="x")
         self.label(box, "聲音管道", 10, C_ACCENT, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 4))
         self.cb_in = self._row(box, 1, "🎙 麥克風", self.dev_in, self.g_in, 200, C_CYAN, "inp")
-        self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 150, C_GREEN, "mon")
+        self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 400, C_GREEN, "mon")   # 最大 400%（約 +12 dB，有限制器不會破音）
         self.cb_out = self._row(box, 3, "📡 直播", self.dev_out, self.g_out, 150, C_PINK, "out")
         self.cb_bgm = self._row(box, 4, "🎵 伴奏", self.dev_bgm, self.g_bgm, 150, C_YELLOW, "bgm")
         bgmrow = tk.Frame(box, bg=C_CARD)
