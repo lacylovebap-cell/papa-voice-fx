@@ -1,0 +1,659 @@
+// 怕怕調音台 - C++ 聲音處理核心（由 dsp.py 移植）
+// 所有「每一段」的行為都改成以時間換算，區塊大小改變時手感一致。
+#pragma once
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <vector>
+
+namespace papa {
+
+static const double PI = 3.14159265358979323846;
+static const double REF_BLOCK = 256.0;   // Python 版的參考區塊大小
+
+// ---------------------------------------------------------------- 濾波器
+enum BqKind { BQ_LOWSHELF, BQ_HIGHSHELF, BQ_PEAKING, BQ_HP, BQ_LP };
+
+struct Biquad {
+    BqKind kind = BQ_PEAKING;
+    double f0 = 1000, sr = 48000, q = 0.707, gain = 0;
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    double z1 = 0, z2 = 0;
+    bool bypass = false;
+
+    Biquad() {}
+    Biquad(BqKind k, double f, double s, double g = 0.0, double qq = 0.707) : kind(k), f0(f), sr(s), q(qq) { set_gain(g); }
+
+    void set_gain(double g) {
+        gain = g;
+        bypass = (kind == BQ_LOWSHELF || kind == BQ_HIGHSHELF || kind == BQ_PEAKING) && std::fabs(g) < 0.05;
+        double A = std::pow(10.0, g / 40.0);
+        double w0 = 2 * PI * f0 / sr, cw = std::cos(w0), sw = std::sin(w0);
+        double alpha = sw / (2 * q);
+        double B0, B1, B2, A0, A1, A2;
+        if (kind == BQ_LOWSHELF) {
+            double sA = std::sqrt(A);
+            B0 = A * ((A + 1) - (A - 1) * cw + 2 * sA * alpha);
+            B1 = 2 * A * ((A - 1) - (A + 1) * cw);
+            B2 = A * ((A + 1) - (A - 1) * cw - 2 * sA * alpha);
+            A0 = (A + 1) + (A - 1) * cw + 2 * sA * alpha;
+            A1 = -2 * ((A - 1) + (A + 1) * cw);
+            A2 = (A + 1) + (A - 1) * cw - 2 * sA * alpha;
+        } else if (kind == BQ_HIGHSHELF) {
+            double sA = std::sqrt(A);
+            B0 = A * ((A + 1) + (A - 1) * cw + 2 * sA * alpha);
+            B1 = -2 * A * ((A - 1) + (A + 1) * cw);
+            B2 = A * ((A + 1) + (A - 1) * cw - 2 * sA * alpha);
+            A0 = (A + 1) - (A - 1) * cw + 2 * sA * alpha;
+            A1 = 2 * ((A - 1) - (A + 1) * cw);
+            A2 = (A + 1) - (A - 1) * cw - 2 * sA * alpha;
+        } else if (kind == BQ_PEAKING) {
+            B0 = 1 + alpha * A; B1 = -2 * cw; B2 = 1 - alpha * A;
+            A0 = 1 + alpha / A; A1 = -2 * cw; A2 = 1 - alpha / A;
+        } else if (kind == BQ_HP) {
+            B0 = (1 + cw) / 2; B1 = -(1 + cw); B2 = (1 + cw) / 2;
+            A0 = 1 + alpha; A1 = -2 * cw; A2 = 1 - alpha;
+        } else {
+            B0 = (1 - cw) / 2; B1 = 1 - cw; B2 = (1 - cw) / 2;
+            A0 = 1 + alpha; A1 = -2 * cw; A2 = 1 - alpha;
+        }
+        b0 = B0 / A0; b1 = B1 / A0; b2 = B2 / A0; a1 = A1 / A0; a2 = A2 / A0;
+    }
+    void reset() { z1 = z2 = 0; }
+    inline double tick(double x) {
+        double y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+    void run(double* x, int n) {
+        if (bypass) return;
+        for (int i = 0; i < n; i++) x[i] = tick(x[i]);
+    }
+};
+
+// ---------------------------------------------------------------- 判斷調
+static const int SCALE_MAJOR[7] = {0, 2, 4, 5, 7, 9, 11};
+static const int SCALE_MINOR[7] = {0, 2, 3, 5, 7, 8, 10};
+static const int SCALE_PENT[5] = {0, 2, 4, 7, 9};
+static const int SCALE_BLUES[6] = {0, 3, 5, 6, 7, 10};
+static const double MAJ_PROFILE[12] = {6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88};
+
+struct KeyTracker {
+    double h[12] = {0};
+    double half_life = 20.0;
+    int key = -1;
+    double sung = 0;
+    void add(double midi, double dt) {
+        double d = std::pow(0.5, dt / half_life);
+        for (double& v : h) v *= d;
+        int k = ((int)std::lround(midi) % 12 + 12) % 12;
+        h[k] += dt;
+        sung += dt;
+    }
+    static double corr(const double* x, const double* y) {
+        double mx = 0, my = 0;
+        for (int i = 0; i < 12; i++) { mx += x[i]; my += y[i]; }
+        mx /= 12; my /= 12;
+        double sxy = 0, sxx = 0, syy = 0;
+        for (int i = 0; i < 12; i++) {
+            double a = x[i] - mx, b = y[i] - my;
+            sxy += a * b; sxx += a * a; syy += b * b;
+        }
+        return (sxx > 0 && syy > 0) ? sxy / std::sqrt(sxx * syy) : 0.0;
+    }
+    int update() {
+        double s = 0;
+        for (double v : h) s += v;
+        if (sung < 2.0 || s <= 0) return key;
+        double x[12], prof[12], sc[12];
+        for (int i = 0; i < 12; i++) x[i] = h[i] / s;
+        for (int k = 0; k < 12; k++) {
+            for (int i = 0; i < 12; i++) prof[(i + k) % 12] = MAJ_PROFILE[i];
+            sc[k] = corr(x, prof);
+        }
+        int best = 0;
+        for (int k = 1; k < 12; k++) if (sc[k] > sc[best]) best = k;
+        if (key < 0 || sc[best] > sc[key] + 0.05) key = best;
+        return key;
+    }
+};
+
+// ---------------------------------------------------------------- 電音／變調
+enum Mode { M_OFF = 0, M_SCALE = 1, M_CHROM = 2, M_ROBOT = 3, M_NATURAL = 4, M_ELECTRO = 5 };
+
+struct TunerParams {
+    int mode = M_OFF;
+    int key = 0;
+    int scale = 0;          // 0 major 1 minor 2 pent 3 blues
+    double strength = 1.0, speed = 0.0, shift = 0.0;
+    double robot = 57, card_shift = 0.0;
+    double flex = 0.0, humanize = 0.0, sticky = 0.7;
+    double predict = 2.0;   // 以「參考區塊（256）」為單位
+};
+
+struct Tuner {
+    static const int DEC = 4, R = 512, H = 256, CORR_LEN = 384, SEARCH = 480, L = 16384;
+    double sr, srD;
+    int W;
+    TunerParams p;
+    bool allowed[12];
+    // 音高偵測
+    double dbuf[R];
+    int tau_max, tau_min;
+    double acc = 0; int accN = 0;
+    std::vector<double> dtmp, cm;
+    // 狀態
+    double cur = 0, raw_prev = 0, wet = 0, det = 0, target = 0, f = 0;
+    bool voiced = false;
+    double unv_t = 1.0;           // 連續沒偵測到音高的時間（秒）
+    bool has_held = false; double held = 0;
+    KeyTracker keyt;
+    double key_timer = 0;
+    double dsm = 0;
+    double hold_t = 0; bool has_prev_target = false; double prev_target = 0;
+    // 變調延遲線
+    std::vector<double> hist;
+    int w = 0;
+    double tph[2] = {0.0, 0.5};
+    double toff[2] = {0.0, 0.0};
+
+    Tuner(double sr_ = 48000, double window_ms = 21.0) : sr(sr_), srD(sr_ / DEC) {
+        W = (int)(sr * window_ms / 1000);
+        std::memset(dbuf, 0, sizeof(dbuf));
+        tau_max = std::min(R - H - 1, (int)(srD / 70));
+        tau_min = std::max(2, (int)(srD / 900));
+        dtmp.assign(tau_max + 2, 0.0);
+        cm.assign(tau_max + 2, 1.0);
+        hist.assign(L, 0.0);
+        update_scale();
+    }
+    void set_window(double ms) { W = (int)(sr * ms / 1000); tph[0] = 0; tph[1] = 0.5; toff[0] = toff[1] = 0; }
+
+    void update_scale() {
+        const int* iv = SCALE_MAJOR; int n = 7;
+        if (p.scale == 1) { iv = SCALE_MINOR; n = 7; }
+        else if (p.scale == 2) { iv = SCALE_PENT; n = 5; }
+        else if (p.scale == 3) { iv = SCALE_BLUES; n = 6; }
+        for (int i = 0; i < 12; i++) allowed[i] = false;
+        for (int i = 0; i < n; i++) allowed[(iv[i] + p.key) % 12] = true;
+    }
+
+    double sticky_note(double t, double x) {
+        if (has_held && std::fabs(x - held) < p.sticky && t != held) return held;
+        held = t; has_held = true;
+        return t;
+    }
+
+    static int pmod(int a, int m) { return ((a % m) + m) % m; }
+
+    double quantize(double d) {
+        int m = p.mode;
+        if (m == M_NATURAL || m == M_ELECTRO) {
+            int k = keyt.key;
+            if (k < 0) return (double)std::lround(d);
+            bool al[12] = {false};
+            for (int i = 0; i < 7; i++) al[(SCALE_MAJOR[i] + k) % 12] = true;
+            int c0 = (int)std::lround(d), best = c0; double bd = 1e9;
+            for (int c = c0 - 6; c <= c0 + 6; c++)
+                if (al[pmod(c, 12)] && std::fabs(c - d) < bd) { bd = std::fabs(c - d); best = c; }
+            return best;
+        }
+        if (m == M_CHROM) return (double)std::lround(d);
+        if (m == M_ROBOT) return p.robot + 12 * std::round((d - p.robot) / 12);
+        int c0 = (int)std::lround(d), best = c0; double bd = 1e9;
+        for (int c = c0 - 6; c <= c0 + 6; c++)
+            if (allowed[pmod(c, 12)] && std::fabs(c - d) < bd) { bd = std::fabs(c - d); best = c; }
+        return best;
+    }
+
+    double detect() {
+        const int tm = tau_max;
+        const double* seg = dbuf + (R - (H + tm + 1));
+        double e = 0;
+        for (int j = 0; j < H; j++) { double v = seg[tm + 1 + j]; e += v * v; }
+        if (std::sqrt(e / H) < 0.008) return 0.0;
+        // 差分函數 d(tau) = sum (a[j] - seg[j+tau])^2，a = seg[0..H)
+        double run = 0;
+        cm[0] = 1;
+        for (int tau = 1; tau <= tm; tau++) {
+            double s = 0;
+            for (int j = 0; j < H; j++) { double df = seg[j] - seg[j + tau]; s += df * df; }
+            dtmp[tau] = s;
+            run += s;
+            cm[tau] = run > 0 ? s * tau / run : 1.0;
+        }
+        int t = -1;
+        for (int k = tau_min; k < tm; k++) if (cm[k] < 0.15) { t = k; break; }
+        if (t < 0) return 0.0;
+        while (t + 1 < tm && cm[t + 1] < cm[t]) t++;
+        double tr = t;
+        if (t > 1 && t < tm) {
+            double a0 = cm[t - 1], b0 = cm[t], c0 = cm[t + 1];
+            double den = a0 - 2 * b0 + c0;
+            if (std::fabs(den) > 1e-9) tr = t + (a0 - c0) / (2 * den);
+        }
+        double ff = srD / tr;
+        return (ff >= 70 && ff <= 900) ? ff : 0.0;
+    }
+
+    inline double hread(double delay) const {
+        double pos = (double)w - delay;
+        double fl = std::floor(pos);
+        long i1 = (long)fl;
+        double t = pos - fl;
+        auto at = [&](long i) { return hist[(size_t)(((i % L) + L) % L)]; };
+        double y0 = at(i1 - 1), y1 = at(i1), y2 = at(i1 + 1), y3 = at(i1 + 2);
+        double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+        return ((c3 * t + c2) * t + c1) * t + y1;
+    }
+    inline double hat(long i) const { return hist[(size_t)(((i % L) + L) % L)]; }
+
+    // 換相時找最佳接合點：讓新取樣點讀到的聲音和目前正在播的最像
+    double best_offset(double other_delay, double base_delay) {
+        long cur_i = w;   // 目前樣本已寫入 w-1
+        long po = (long)std::floor((double)cur_i - other_delay);
+        long pn = (long)std::floor((double)cur_i - base_delay);
+        const int Lc = CORR_LEN, S = SEARCH;
+        double best = -1e18; int bk = 0;
+        // 先算參考段能量不需要（只在比對分母用候選段能量）
+        double esum = 0;
+        // 候選段 k：[pn - Lc - k, pn - k)
+        for (int j = 0; j < Lc; j++) { double v = hat(pn - Lc + j); esum += v * v; }
+        for (int k = 0; k <= S; k++) {
+            if (k > 0) {   // 滑動能量
+                double add = hat(pn - Lc - k), rem = hat(pn - k);
+                esum += add * add - rem * rem;
+            }
+            double c = 0;
+            long b1 = pn - Lc - k, b0 = po - Lc;
+            for (int j = 0; j < Lc; j++) c += hat(b0 + j) * hat(b1 + j);
+            double v = c / std::sqrt(std::max(esum, 0.0) + 1e-12);
+            if (v > best) { best = v; bk = k; }
+        }
+        return (double)bk;
+    }
+
+    void process(double* x, int n) {
+        const double dt = n / sr;
+        const double blocks = n / REF_BLOCK;
+        bool active = p.mode != M_OFF;
+        // 降取樣餵偵測器
+        for (int i = 0; i < n; i++) {
+            acc += x[i];
+            if (++accN == DEC) {
+                std::memmove(dbuf, dbuf + 1, sizeof(double) * (R - 1));
+                dbuf[R - 1] = acc / DEC;
+                acc = 0; accN = 0;
+            }
+        }
+        double ff = detect();
+        f = ff;
+        if (ff > 0) {
+            double raw = 69 + 12 * std::log2(ff / 440.0);
+            double pred = raw;
+            if (unv_t <= 0 && std::fabs(raw - raw_prev) < 0.7 * std::max(1.0, blocks)) {
+                double slope_per_ref = (raw - raw_prev) / std::max(blocks, 1e-6);
+                pred = raw + slope_per_ref * p.predict;
+            }
+            raw_prev = raw;
+            unv_t = 0;
+            det = pred;
+            keyt.add(raw, dt);
+            key_timer += dt;
+            if (key_timer >= 40 * REF_BLOCK / sr) { key_timer = 0; keyt.update(); }
+            double a = 1 - std::exp(-dt / 0.08);
+            dsm = (std::fabs(raw - dsm) > 1.0) ? raw : dsm + (raw - dsm) * a;
+            double cs = p.card_shift;
+            if (p.mode == M_ROBOT) target = quantize(det) + cs;
+            else if (p.mode == M_NATURAL) target = sticky_note(quantize(dsm + cs), dsm + cs);
+            else target = active ? sticky_note(quantize(det + cs), det + cs) : det + cs;
+            voiced = true;
+        } else {
+            unv_t += dt;
+            if (unv_t > 3 * REF_BLOCK / sr) { voiced = false; has_held = false; }
+        }
+
+        double want, alpha;
+        if (active && voiced) {
+            if (has_prev_target && target == prev_target) hold_t += dt; else hold_t = 0;
+            prev_target = target; has_prev_target = true;
+            double cs = p.card_shift;
+            if (p.mode == M_NATURAL) want = cs + (target - (dsm + cs)) * p.strength + p.shift;
+            else want = cs + (target - (det + cs)) * p.strength + p.shift;
+            if (p.flex > 0) {
+                double ref = (p.mode == M_NATURAL) ? dsm : det;
+                double dev = std::fabs(target - (ref + cs));
+                double thr = 0.5 - 0.4 * p.flex;
+                double wgt = std::min(1.0, std::max(0.0, (thr + 0.12 - dev) / 0.12));
+                want = cs + p.shift + (want - cs - p.shift) * wgt;
+            }
+            double tau = p.speed * 0.4 + p.humanize * 0.3 * std::min(1.0, hold_t / 0.35);
+            alpha = tau > 0.0005 ? 1 - std::exp(-n / (sr * tau)) : 1.0;
+        } else {
+            want = p.shift + p.card_shift;
+            alpha = 1 - std::pow(1 - 0.15, blocks);
+        }
+        if (!voiced) { has_prev_target = false; hold_t = 0; }
+        if (voiced && unv_t > 0) want = cur;
+        cur += (want - cur) * alpha;
+
+        double wet_t = (active || std::fabs(p.shift + p.card_shift) > 0.001) ? 1.0 : 0.0;
+        if (wet < 0.0005 && wet_t == 0.0) {
+            for (int i = 0; i < n; i++) { hist[w] = x[i]; w = (w + 1) % L; }
+            wet = 0;
+            return;
+        }
+        double r = std::pow(2.0, cur / 12.0);
+        double inc = (1 - r) / W;
+        for (int i = 0; i < n; i++) {
+            double xi = x[i];
+            hist[w] = xi;
+            w = (w + 1) % L;
+            wet = wet_t + (wet - wet_t) * 0.997;
+            double s = 0, gs = 0;
+            for (int tap = 0; tap < 2; tap++) {
+                double ph = tph[tap];
+                if (ph >= 1 || ph < 0) {
+                    int o = 1 - tap;
+                    double p0 = r >= 1 ? 0.9999999 : 0.0;
+                    double po_ph = tph[o] - std::floor(tph[o]);
+                    double od = toff[o] + po_ph * W + 3;
+                    toff[tap] = best_offset(od, p0 * W + 3);
+                    ph = p0;
+                }
+                double g = 0.5 - 0.5 * std::cos(2 * PI * ph);
+                s += g * hread(toff[tap] + ph * W + 3);
+                gs += g;
+                tph[tap] = ph + inc;
+            }
+            s /= std::max(gs, 0.5);
+            x[i] = xi * (1 - wet) + s * wet;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- 壓縮
+struct Compressor {
+    double gain_db = 0, amount = 0.4;
+    void process(double* x, int n) {
+        double c = amount;
+        double blocks = n / REF_BLOCK;
+        if (c <= 0.001) {
+            gain_db *= std::pow(0.9, blocks);
+            if (std::fabs(gain_db) < 0.01) return;
+        }
+        double e = 0;
+        for (int i = 0; i < n; i++) e += x[i] * x[i];
+        double level = 20 * std::log10(std::max(std::sqrt(e / n), 1e-5));
+        double thr = -6 - 30 * c, ratio = 1 + 7 * c;
+        double tgt = c > 0.001 ? std::min(0.0, (thr - level) * (1 - 1 / ratio)) : 0.0;
+        double coef = tgt < gain_db ? 1 - std::pow(0.4, blocks) : 1 - std::pow(0.92, blocks);
+        double nw = gain_db + (tgt - gain_db) * coef;
+        double mk = 1.0 + 0.4 * c;
+        for (int i = 0; i < n; i++) {
+            double gdb = gain_db + (nw - gain_db) * i / n;
+            x[i] *= std::pow(10.0, gdb / 20) * mk;
+        }
+        gain_db = nw;
+    }
+};
+
+// ---------------------------------------------------------------- 混響
+struct Reverb {
+    std::vector<std::vector<double>> cb, ab;
+    std::vector<int> ci, ai;
+    double g = 0.82;
+    Reverb(double sr = 48000) {
+        const int COMB[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+        const int ALLP[4] = {347, 441, 556, 701};
+        double s = sr / 44100.0;
+        for (int d : COMB) { cb.emplace_back((size_t)(int)(d * s), 0.0); ci.push_back(0); }
+        for (int d : ALLP) { ab.emplace_back((size_t)(int)(d * s), 0.0); ai.push_back(0); }
+    }
+    inline double tick(double x) {
+        double accv = 0;
+        for (size_t k = 0; k < cb.size(); k++) {
+            auto& b = cb[k]; int& i = ci[k];
+            double y = x + g * b[i];
+            b[i] = y; i = (i + 1) % (int)b.size();
+            accv += y;
+        }
+        double y = accv * 0.1;
+        for (size_t k = 0; k < ab.size(); k++) {
+            auto& b = ab[k]; int& i = ai[k];
+            double wh = b[i];
+            double ww = y + 0.5 * wh;
+            y = -0.5 * ww + wh;
+            b[i] = ww; i = (i + 1) % (int)b.size();
+        }
+        return y;
+    }
+};
+
+// ---------------------------------------------------------------- 電音質感（雙重唱＋亮度，不加回音）
+struct ElectroLayer {
+    double sr;
+    std::vector<double> buf;
+    int L = 1 << 15, w = 0;
+    long long t = 0;
+    Biquad air, pres;
+    ElectroLayer(double s = 48000) : sr(s), buf(1 << 15, 0.0), air(BQ_HIGHSHELF, 9000, s, 5.0), pres(BQ_PEAKING, 4500, s, 2.5, 0.9) {}
+    void process(double* y, int n, double amt) {
+        for (int i = 0; i < n; i++) {
+            buf[w] = y[i];
+            double tt = (double)(t + i) / sr;
+            double dbl = 0;
+            const double P[2][4] = {{0.017, 0.0022, 0.37, 0.0}, {0.023, 0.0026, 0.29, 2.1}};
+            for (int k = 0; k < 2; k++) {
+                double d = (P[k][0] + P[k][1] * std::sin(2 * PI * P[k][2] * tt + P[k][3])) * sr;
+                double pos = (double)w - d;
+                double fl = std::floor(pos); long i0 = (long)fl; double fr = pos - fl;
+                double a = buf[(size_t)(((i0 % L) + L) % L)], b = buf[(size_t)((((i0 + 1) % L) + L) % L)];
+                dbl += a * (1 - fr) + b * fr;
+            }
+            dbl *= 0.5;
+            w = (w + 1) % L;
+            double wetv = y[i] + amt * 0.55 * dbl;
+            double br = pres.tick(air.tick(wetv));
+            y[i] = y[i] * (1 - amt) + br * amt;
+        }
+        t += n;
+    }
+};
+
+// ---------------------------------------------------------------- 金屬共鳴
+struct MetalComb {
+    double sr; std::vector<double> buf; int L = 4096, w = 0; double D = 200;
+    MetalComb(double s = 48000) : sr(s), buf(4096, 0.0) {}
+    void process(double* x, int n, double amt, bool has_midi, double midi) {
+        if (amt <= 0.001) {
+            for (int i = 0; i < n; i++) { buf[w] = x[i]; w = (w + 1) % L; }
+            return;
+        }
+        if (has_midi) {
+            double ff = 440.0 * std::pow(2.0, (midi - 69) / 12);
+            double Dt = std::min((double)(L - 2), std::max(20.0, sr / ff));
+            D += (Dt - D) * 0.5;
+        }
+        double g = has_midi ? (0.35 + 0.35 * amt) : 0.0;
+        double fl = std::floor(D); int i0 = (int)fl; double fr = D - fl;
+        for (int i = 0; i < n; i++) {
+            double a = buf[(size_t)(((w - i0) % L + L) % L)], b = buf[(size_t)(((w - i0 - 1) % L + L) % L)];
+            double y = x[i] + g * (a * (1 - fr) + b * fr);
+            buf[w] = y; w = (w + 1) % L;
+            x[i] = x[i] * (1 - amt) + y * (1 - g) * amt;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- 去齒音
+struct DeEsser {
+    Biquad hp1, hp2, shelf; double g = 1.0, reduced = 0;
+    std::vector<double> tmp;
+    DeEsser(double sr = 48000) : hp1(BQ_HP, 5000, sr, 0, 0.7), hp2(BQ_HP, 5000, sr, 0, 0.7), shelf(BQ_HIGHSHELF, 4500, sr, 0.0) {}
+    void process(double* y, int n, double amt) {
+        if ((int)tmp.size() < n) tmp.resize(n);
+        double s = 0, t = 0;
+        for (int i = 0; i < n; i++) {
+            double hb = hp2.tick(hp1.tick(y[i]));
+            s += hb * hb; t += y[i] * y[i];
+        }
+        if (amt <= 0.001) { g = 1.0; shelf.set_gain(0.0); return; }
+        s = std::sqrt(s / n) + 1e-9; t = std::sqrt(t / n) + 1e-9;
+        double rel = 20 * std::log10(s / t);
+        double thr = -6.0 - 8.0 * amt;
+        double excess = std::max(0.0, rel - thr);
+        double gdb = excess > 0 ? -std::min(14.0 * amt + 2.0, excess * (0.6 + 0.4 * amt)) : 0.0;
+        double want = std::pow(10.0, gdb / 20);
+        double blocks = n / REF_BLOCK;
+        double g_end = want < g ? want : g + (want - g) * (1 - std::pow(0.7, blocks));
+        g = g_end;
+        reduced = -20 * std::log10(std::max(g_end, 1e-6));
+        shelf.set_gain(reduced > 0.05 ? -reduced : 0.0);
+        shelf.run(y, n);
+    }
+};
+
+// ---------------------------------------------------------------- 限制器
+struct Limiter {
+    double g = 1.0, ceiling = 0.89, rel, reduced = 0;
+    Limiter(double sr = 48000, double c = 0.89, double release = 0.15) : ceiling(c) { rel = std::exp(-1.0 / (release * sr)); }
+    void process(double* x, int n) {
+        if (n <= 0) return;
+        double peak = 0;
+        for (int i = 0; i < n; i++) peak = std::max(peak, std::fabs(x[i]));
+        double want = peak > 1e-9 ? std::min(1.0, ceiling / peak) : 1.0;
+        double g_end = want < g ? want : want + (g - want) * std::pow(rel, n);
+        bool ramp = g_end > g;
+        double g0 = g;
+        g = g_end;
+        reduced = -20 * std::log10(std::max(g_end, 1e-6));
+        const double c = ceiling;
+        for (int i = 0; i < n; i++) {
+            double gi = ramp ? g0 + (g_end - g0) * i / n : g_end;
+            double v = x[i] * gi;
+            double a = std::fabs(v);
+            if (a > c) v = (v > 0 ? 1 : -1) * (c + (1 - c) * std::tanh((a - c) / (1 - c)));
+            x[i] = v;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- 聲線
+struct ColorBand { double f, g, q; };
+static const ColorBand COLORS[6][5] = {
+    {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}},                                   // 0 原本
+    {{200, -1.5, 1.0}, {2000, 2.5, 1.8}, {4000, 1.5, 0.8}, {8000, -1.5, 1.0}, {16000, 1.0, 0.3}},  // 1 人聲修飾
+    {{200, -3, 1.0}, {2000, 5, 1.8}, {4000, 3, 0.8}, {8000, -3, 1.0}, {16000, 2, 0.3}},            // 2 少女甜嗓
+    {{80, 4, 0.7}, {250, 3, 1.2}, {800, -2, 2.0}, {3000, -3, 1.5}, {12000, 2, 0.5}},               // 3 御姐煙嗓
+    {{80, -3, 1.2}, {250, -2, 1.0}, {1500, 3, 0.8}, {4000, 4, 1.0}, {10000, 3, 1.2}},              // 4 古風戲腔
+    {{300, 6, 0.5}, {1200, -4, 2.0}, {4000, 3, 0.8}, {8000, 6, 1.5}, {12000, 5, 0.3}},             // 5 ASMR
+};
+
+// ---------------------------------------------------------------- 整合
+struct FxParams {
+    bool phone = false; double phone_dist = 0.25; bool machine = false;
+    double eq_lo = 0, eq_mid = 0, eq_hi = 0, comp = 0.4, verb = 0.15;
+    bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0;
+};
+
+struct VoiceFx {
+    static constexpr double CARD_SHIFT = 1.5;
+    double sr;
+    Tuner tuner;
+    FxParams p;
+    Biquad card_eq[2];
+    Biquad ph[4];
+    double ph_mix = 0;
+    Biquad mch[6];
+    double m_mix = 0;
+    Biquad eq[3];
+    Compressor comp;
+    ElectroLayer electro;
+    DeEsser deesser;
+    MetalComb metal;
+    Biquad color_eq[5];
+    int color_cur = -1;
+    Reverb verb;
+    std::vector<double> t1, t2;
+
+    VoiceFx(double s = 48000, double window_ms = 21.0)
+        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), verb(s) {
+        card_eq[0] = Biquad(BQ_LOWSHELF, 350, s, -6.0);
+        card_eq[1] = Biquad(BQ_PEAKING, 3200, s, -5.0, 1.4);
+        ph[0] = Biquad(BQ_HP, 320, s, 0, 0.9); ph[1] = Biquad(BQ_HP, 320, s, 0, 0.9);
+        ph[2] = Biquad(BQ_LP, 3300, s, 0, 0.9); ph[3] = Biquad(BQ_LP, 3300, s, 0, 0.9);
+        mch[0] = Biquad(BQ_HP, 450, s, 0, 0.7); mch[1] = Biquad(BQ_HP, 450, s, 0, 0.7);
+        mch[2] = Biquad(BQ_LP, 3400, s, 0, 0.7); mch[3] = Biquad(BQ_LP, 3400, s, 0, 0.7);
+        mch[4] = Biquad(BQ_PEAKING, 1400, s, 5.0, 1.0); mch[5] = Biquad(BQ_PEAKING, 700, s, -2.0, 1.2);
+        eq[0] = Biquad(BQ_LOWSHELF, 150, s, 0); eq[1] = Biquad(BQ_PEAKING, 2200, s, 0, 0.8); eq[2] = Biquad(BQ_HIGHSHELF, 7000, s, 0);
+        apply();
+    }
+
+    void apply() {
+        tuner.p.card_shift = p.card ? CARD_SHIFT : 0.0;
+        if (p.color != color_cur) {
+            color_cur = p.color;
+            int c = std::max(0, std::min(5, p.color));
+            for (int k = 0; k < 5; k++) {
+                const ColorBand& b = COLORS[c][k];
+                color_eq[k] = Biquad(BQ_PEAKING, b.f > 0 ? std::min(b.f, sr * 0.45) : 1000.0, sr, b.g, b.q);
+            }
+        }
+        eq[0].set_gain(p.eq_lo); eq[1].set_gain(p.eq_mid); eq[2].set_gain(p.eq_hi);
+        comp.amount = p.comp;
+    }
+
+    // info
+    bool info_voiced() const { return tuner.voiced; }
+
+    void process(float* io, int n0) {
+        int n = (n0 + 3) / 4 * 4;
+        if ((int)t1.size() < n) { t1.resize(n); t2.resize(n); }
+        double* y = t1.data();
+        for (int i = 0; i < n; i++) y[i] = i < n0 ? io[i] : 0.0;
+        tuner.process(y, n);
+
+        // 電話音
+        double pt = p.phone ? 1.0 : 0.0;
+        if (pt > 0 || ph_mix > 0.001) {
+            double* z = t2.data();
+            double k = p.phone_dist * 40;
+            for (int i = 0; i < n; i++) {
+                double v = y[i];
+                for (auto& b : ph) v = b.tick(v);
+                v = ((1 + k) * v) / (1 + k * std::fabs(v));
+                z[i] = v * 1.6;
+            }
+            for (int i = 0; i < n; i++) { double r = ph_mix + (pt - ph_mix) * i / n; y[i] = y[i] * (1 - r) + z[i] * r; }
+        } else for (auto& b : ph) b.reset();
+        ph_mix = pt;
+        // 答錄機
+        double mt = p.machine ? 1.0 : 0.0;
+        if (mt > 0 || m_mix > 0.001) {
+            double* z = t2.data();
+            for (int i = 0; i < n; i++) { double v = y[i]; for (auto& b : mch) v = b.tick(v); z[i] = v * 1.8; }
+            for (int i = 0; i < n; i++) { double r = m_mix + (mt - m_mix) * i / n; y[i] = y[i] * (1 - r) + z[i] * r; }
+        }
+        m_mix = mt;
+        // 聲卡變音音色
+        if (p.card) { card_eq[0].run(y, n); card_eq[1].run(y, n); }
+        else { card_eq[0].reset(); card_eq[1].reset(); }
+        bool has_t = tuner.voiced && tuner.p.mode != M_OFF;
+        metal.process(y, n, p.metal, has_t, tuner.target);
+        if (p.electro_fx > 0.001) electro.process(y, n, p.electro_fx);
+        for (auto& b : color_eq) b.run(y, n);
+        for (auto& b : eq) b.run(y, n);
+        deesser.process(y, n, p.deess);
+        comp.process(y, n);
+        double v = p.verb;
+        for (int i = 0; i < n; i++) {
+            double rv = verb.tick(y[i]);
+            if (v > 0.001) y[i] += rv * v * 0.8;
+        }
+        for (int i = 0; i < n0; i++) io[i] = (float)std::max(-1.0, std::min(1.0, y[i]));
+    }
+};
+
+}  // namespace papa

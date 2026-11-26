@@ -9,7 +9,15 @@ import traceback
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-import engine
+import os as _os
+try:
+    if _os.environ.get("PAPA_FORCE_PY"):
+        raise ImportError("強制使用 Python 引擎")
+    import native_engine as engine          # C++ 底層引擎（延遲最低）
+    NATIVE = True
+except Exception:
+    import engine                           # 相容用的 Python 引擎
+    NATIVE = False
 from dsp import note_name, KEY_NAMES, VOICE_COLORS
 
 APP = "PaPaVoiceFx"
@@ -166,7 +174,7 @@ class App:
         self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
         self.card = self.var("card", 1, tk.IntVar, remember=False)  # 每次開啟一律鎖定
         self.ultra = self.var("ultra_v2", 0, tk.IntVar)
-        self.block_now = 256
+        self.block_now = 128 if NATIVE else 256
         self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
         self.verb = self.var("verb", 15, D)
@@ -402,9 +410,9 @@ class App:
         bgm = self.dev_bgm.get()
         try:
             if ultra:
-                self.block_now = 128
-            elif self.block_now < 256:
-                self.block_now = 256
+                self.block_now = 64 if NATIVE else 128
+            elif self.block_now < (128 if NATIVE else 256):
+                self.block_now = 128 if NATIVE else 256
             self.eng.start(in_dev, mon_dev, out_dev, block=self.block_now, low_latency=bool(ultra),
                            backing=None if bgm in ("", NONE) else bgm, ultra=bool(ultra))
         except Exception as e:
@@ -618,7 +626,7 @@ class App:
             bmsg = ""
             if e.backing_error or (bk is not None and bk.error):
                 bmsg = "\n伴奏抓不到：" + str(e.backing_error or bk.error)
-            mode = "收音＋耳機同一條線（最即時）" if e.duplex else "收音、耳機分開（相容模式）"
+            mode = ("C++ 底層引擎・" if NATIVE else "Python 引擎・") + ("收音＋耳機同一條線（最即時）" if e.duplex else "收音、耳機分開（相容模式）")
             self.status.config(text="%s\n耳機聽自己的延遲：約 %.0f ms\n直播那條自動緩衝：%.0f ms（不影響耳機）\n耳機爆音次數：%d%s"
                                % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bmsg))
             self.auto_protect()

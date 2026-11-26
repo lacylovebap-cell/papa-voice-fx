@@ -18,15 +18,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: 編譯 C++ 底層引擎
+        shell: cmd
+        run: cl /nologo /O2 /EHsc /std:c++17 /utf-8 /LD native\src\fx_api.cpp native\src\engine.cpp /Fe:papa_engine.dll ole32.lib
+      - name: 測試 C++ 底層引擎
+        run: |
+          python test_native_dsp.py
+          python test_lowlat.py
+          python test_native_engine.py
       - name: 離線測試
         run: |
           python test_dsp.py
           python test_engine.py
-          python test_gui.py
+          $env:PAPA_FORCE_PY="1"; python test_gui.py; $env:PAPA_FORCE_PY=""
+          python test_gui_native.py
       - name: 打包 exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx
           --collect-all sounddevice --collect-all soundcard
+          --add-binary "papa_engine.dll;." --hidden-import native_engine --hidden-import native_fx
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
           --exclude-module matplotlib --exclude-module pandas --exclude-module PIL --exclude-module IPython
           app.py
