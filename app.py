@@ -1058,10 +1058,10 @@ class App:
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
                             fg=C_DARKTXT if b else C_TXT)
         if hasattr(self, "listen_btns"):
-            for m, b in enumerate(self.listen_btns):
-                on = int(self.listen.get()) == m
-                c = (C_ACCENT if m == 0 else C_YELLOW) if on else C_BTN
-                b.config(bg=c, activebackground=c, fg=("white" if m == 0 else C_DARKTXT) if on else C_TXT)
+            for m, lb in enumerate(self.listen_btns):
+                sel = int(self.listen.get()) == m
+                lc = (C_ACCENT if m == 0 else C_YELLOW) if sel else C_BTN
+                lb.config(bg=lc, activebackground=lc, fg=("white" if m == 0 else C_DARKTXT) if sel else C_TXT)
         el_on = self.active_preset == "electro"
         self.cb_style.config(state="readonly" if el_on else "disabled")
         self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」）")

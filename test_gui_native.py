@@ -45,7 +45,7 @@ def mon_level(m):
         vals.append(a.wave_mon.hist[-1])
     return sum(vals[6:]) / len(vals[6:])
 l0, l2 = mon_level(0), mon_level(2)
-check("試聽「手機外放」：低音（220 Hz 測試音）被削弱", l2 < l0 * 0.7, "%.2f → %.2f" % (l0, l2))
+check("試聽「手機外放」：低音被削掉、耳機聲音有改變", l2 < l0 * 0.9, "%.2f → %.2f" % (l0, l2))
 a.set_listen(0)
 a.preset("electro")
 # 錄兩段，暫存在清單

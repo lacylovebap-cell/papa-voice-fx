@@ -193,6 +193,9 @@ a.set_listen(2)
 check("試聽：手機外放", fx.params["mon_mode"] == 2 and str(a.listen_btns[2].cget("bg")) == app.C_YELLOW)
 a.set_listen(0)
 check("試聽：回到原本", fx.params["mon_mode"] == 0)
+a.set_listen(2)
+check("試聽時狀態文字仍正確顯示變聲（不會被試聽按鈕影響）", "變聲" in a.now_label.cget("text") and "原音" not in a.now_label.cget("text"), a.now_label.cget("text"))
+a.set_listen(0)
 # 伴奏對齊：錄音分開存人聲和伴奏，播放時照目前的對齊重新混
 import numpy as _np
 v0 = _np.zeros(48000, _np.float32); b0 = _np.zeros(48000, _np.float32); b0[1000] = 0.5
@@ -226,7 +229,7 @@ a.toggle_adv(); root.update(); a.toggle_adv()
 check("進階設定可以展開收起", True)
 a.preset("electro"); a.clear_fx()
 check("無效果：一鍵清掉所有效果", a.active_preset is None and fx.params["mode"] == "off")
-check("狀態文字：變聲＋無效果", "變聲" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"))
+check("狀態文字：變聲＋無效果", "變聲" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"), a.now_label.cget("text"))
 check("超低延遲預設關閉", a.ultra.get() == 0)
 # 自動防爆音：緩衝不足一直增加 → 區塊加大
 import types
