@@ -1,4 +1,4 @@
-"""怕怕調音台 - 底層引擎（C++／miniaudio）的 Python 包裝。
+"""PAPA 調音台 - 底層引擎（C++／miniaudio）的 Python 包裝。
 介面與舊的 engine.py 相同，畫面（app.py）不用改就能換用。"""
 import ctypes
 import os
@@ -47,6 +47,8 @@ LIB.papa_play.restype = _I
 LIB.papa_rec_copy.argtypes = [_I, ctypes.POINTER(ctypes.c_float), _I]
 LIB.papa_rec_copy.restype = _I
 LIB.papa_rec_len.restype = _I
+LIB.papa_play_buffer.argtypes = [ctypes.POINTER(ctypes.c_float), _I]
+LIB.papa_play_buffer.restype = _I
 
 sd = LIB   # app.py 用「engine.sd is None」判斷套件是否正常
 
@@ -94,6 +96,15 @@ def list_backing_sources():
     """可擷取伴奏的來源：每個輸出裝置正在播的聲音。"""
     outs, _ = _names(0)
     return outs
+
+
+def write_wav(path, data):
+    pcm = (np.clip(np.asarray(data, np.float64), -1.0, 1.0) * 32767).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes(pcm.tobytes())
 
 
 class _Backing:
@@ -301,6 +312,18 @@ class Engine:
         buf = np.zeros(max(n, 1), np.float32)
         k = LIB.papa_rec_copy(0 if which == "wet" else 1, buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n)
         return buf[:k]
+
+    def get_recording(self, which):
+        """取出最近一次錄音（處理後 'wet'／原聲 'dry'）。"""
+        return self._rec(which).copy()
+
+    def play_array(self, arr):
+        """在耳機播放任意一段聲音（暫存清單用）。"""
+        a = np.ascontiguousarray(np.asarray(arr, np.float32))
+        self._play_keep = a
+        ok = LIB.papa_play_buffer(a.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(a)) == 1
+        self._cache = None
+        return ok
 
     def save_wav(self, which, path):
         d = self._rec(which)

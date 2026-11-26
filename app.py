@@ -1,4 +1,4 @@
-"""怕怕調音台 - 桌面版（Windows）簡潔版
+"""PAPA 調音台 - 桌面版（Windows）
 執行：python app.py    打包：build.bat
 """
 import collections
@@ -24,14 +24,16 @@ APP = "PaPaVoiceFx"
 NONE = "（不使用）"
 
 # 效果：再按一次同一顆＝關閉。聲卡變音是獨立的鎖，不受效果影響。
-NEUTRAL = dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
-PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 自然修音", "electro": "⚡ 電音", "phone": "📞 電話", "machine": "📼 答錄機"}
+NEUTRAL = dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
+PRESET_NAMES = {"talk": "🗣 說話", "sing": "🎤 自然修音", "electro": "⚡ 電音", "phone": "📞 電話", "machine": "📼 答錄機", "robot": "🤖 機器人"}
 PRESETS = {
-    "talk": dict(electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, eq_lo=0, eq_mid=2, eq_hi=2),
-    "sing": dict(electro_fx=0, mode="natural", phone=0, machine=0, strength=85, speed=10, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=2),
-    "electro": dict(electro_fx=0, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
-    "phone": dict(electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
-    "machine": dict(electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
+    "talk": dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=0, strength=100, speed=0, shift=0, comp=45, eq_lo=0, eq_mid=2, eq_hi=2),
+    "sing": dict(robot_fx=0, electro_fx=0, mode="natural", phone=0, machine=0, strength=85, speed=10, shift=0, comp=40, eq_lo=1, eq_mid=1, eq_hi=2),
+    "electro": dict(robot_fx=0, electro_fx=0, mode="electro", phone=0, machine=0, strength=100, speed=0, shift=0, comp=50, eq_lo=0, eq_mid=1, eq_hi=2),
+    "phone": dict(robot_fx=0, electro_fx=0, mode="off", phone=1, machine=0, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
+    "machine": dict(robot_fx=0, electro_fx=0, mode="off", phone=0, machine=1, strength=100, speed=0, shift=0, comp=60, eq_lo=0, eq_mid=0, eq_hi=0),
+    # 機器人：音高固定（不跟著唱）＋環形調變＋金屬共鳴
+    "robot": dict(robot_fx=100, electro_fx=0, mode="robot", phone=0, machine=0, strength=100, speed=0, shift=0, comp=55, eq_lo=0, eq_mid=2, eq_hi=1),
 }
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
@@ -66,6 +68,17 @@ def rec_dir():
     d = os.path.join(os.path.expanduser("~"), "Documents", APP, "recordings")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def write_wav(path, data):
+    import wave
+    import numpy as np
+    pcm = (np.clip(np.asarray(data, np.float64), -1.0, 1.0) * 32767).astype("<i2")
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        w.writeframes(pcm.tobytes())
 
 
 def log_error(text):
@@ -117,7 +130,7 @@ class Wave(tk.Canvas):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("怕怕調音台")
+        root.title("PAPA 調音台")
         root.configure(bg=C_BG)
         self.eng = engine.Engine()
         self.settings = self.load_settings()
@@ -172,7 +185,11 @@ class App:
         self.g_in, self.g_mon = self.var("g_in", 100, D), self.var("g_mon", 100, D)
         self.g_out, self.g_bgm = self.var("g_out", 100, D), self.var("g_bgm", 80, D)
         self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
-        self.card = self.var("card", 1, tk.IntVar, remember=False)  # 每次開啟一律鎖定
+        # 專屬模式：開機自動開「變聲」並防誤關（怕怕專用）。舊版使用者（已有設定檔）自動沿用專屬模式。
+        self.personal = self.var("personal", 1 if (self.settings and "personal" not in self.settings) else 0, tk.IntVar)
+        self.card = self.var("card_general", 0, tk.IntVar, remember=not self.personal.get())
+        if self.personal.get():
+            self.card.set(1)
         self.ultra = self.var("ultra_v2", 0, tk.IntVar)
         self.block_now = 128 if NATIVE else 256
         self._ur_hist = []
@@ -202,9 +219,24 @@ class App:
             st.theme_use("clam")
         except Exception:
             pass
-        wrap = tk.Frame(self.root, bg=C_BG, padx=14, pady=12)
-        wrap.pack(fill="both", expand=True)
+        # 整個畫面可以用滑鼠滾輪上下捲動（螢幕比較矮時也看得到全部）
+        outer = tk.Frame(self.root, bg=C_BG)
+        outer.pack(fill="both", expand=True)
+        canvas = tk.Canvas(outer, bg=C_BG, highlightthickness=0)
+        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        wrap = tk.Frame(canvas, bg=C_BG, padx=14, pady=12)
+        win = canvas.create_window((0, 0), window=wrap, anchor="nw")
+        wrap.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
+        self.root.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.canvas = canvas
         self.wrap = wrap
+        # 視窗大小：不超過螢幕高度
+        sh = self.root.winfo_screenheight()
+        self.root.geometry("1000x%d" % max(500, min(900, sh - 80)))
 
         # ---- 頂部：開始＋聲卡變音
         top = tk.Frame(wrap, bg=C_BG)
@@ -289,15 +321,23 @@ class App:
         # ---- 錄音
         rc = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         rc.pack(fill="x")
-        self.label(rc, "錄音（錄下直播出去的聲音，自己聽聽看）", 11, C_PINK, True).pack(anchor="w", pady=(0, 6))
+        self.label(rc, "錄音（每錄一段就先暫存在下面清單，想存再存）", 11, C_PINK, True).pack(anchor="w", pady=(0, 6))
         row = tk.Frame(rc, bg=C_CARD)
         row.pack(fill="x")
         self.btn_rec = self.button(row, "● 錄音", self.toggle_rec, size=12)
         self.btn_rec.pack(side="left", expand=True, fill="x", padx=3)
-        self.btn_play_wet = self.button(row, "▶ 聽錄音", lambda: self.play("wet"), size=12)
+        self.btn_play_wet = self.button(row, "▶ 聽選的那段", lambda: self.play("wet"), size=12)
         self.btn_play_wet.pack(side="left", expand=True, fill="x", padx=3)
         self.button(row, "💾 存檔", self.save_rec, size=12).pack(side="left", expand=True, fill="x", padx=3)
-        self.rec_label = self.label(rc, "還沒錄音", 10, C_SUB, anchor="w")
+        self.button(row, "🗑 刪除", self.delete_take, size=12).pack(side="left", expand=True, fill="x", padx=3)
+        self.takes = []          # 暫存的錄音：每段 {name, wet, dry, secs}
+        self._take_no = 0
+        self.take_list = tk.Listbox(rc, height=4, bg="#13111c", fg=C_TXT, selectbackground=C_PINK,
+                                    selectforeground="#2a0a1a", font=(FONT, 10), activestyle="none", bd=0,
+                                    highlightthickness=0, exportselection=False)
+        self.take_list.pack(fill="x", pady=(6, 0))
+        self.take_list.bind("<Double-Button-1>", lambda e: self.play("wet"))
+        self.rec_label = self.label(rc, "還沒錄音（雙擊清單裡的某一段也可以直接聽）", 10, C_SUB, anchor="w")
         self.rec_label.pack(fill="x", pady=(6, 0))
 
         # ---- 進階（預設收起來）
@@ -307,12 +347,15 @@ class App:
         self.adv = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         tk.Checkbutton(self.adv, text="超低延遲（有爆音就取消勾選）", variable=self.ultra, bg=C_CARD, fg=C_TXT,
                        selectcolor="#13111c", activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
+        tk.Checkbutton(self.adv, text="專屬模式：開機自動開「變聲」，關掉前會再確認（怕怕專用，其他歌手不用勾）",
+                       variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor="#13111c",
+                       activebackground=C_CARD, font=(FONT, 10)).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._slider(self.adv, 1, "直播對齊微調（人聲搶拍往右、拖拍往左）", self.bgm_trim, -80, 80, "{:+.0f} ms")
         self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
         self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
         self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：1 說話　2 唱歌　3 電音　4 電話　5 答錄機　6 聲卡變音　B 伴奏　R 錄音",
+        self.hint = self.label(wrap, "快捷鍵 Ctrl+Alt+：1 說話　2 修音　3 電音　4 電話　5 答錄機　7 機器人　6 變聲　B 伴奏　R 錄音",
                                9, C_SUB, anchor="w")
         self.hint.pack(fill="x", pady=(8, 0))
 
@@ -448,11 +491,13 @@ class App:
         if self.active_preset == "electro":
             ms, fl, hu, efx, mt = EL_STYLES[self.el_style.get()]
             strength, speed, flex, humanize, electro_fx, metal = 1.0, ms / 400, fl / 100, hu / 100, efx / 100, mt / 100
+        elif self.active_preset == "robot":
+            metal = 0.6
         elif self.active_preset == "sing":
             ms, fl, hu = NATURAL
             strength, speed, flex, humanize = 1.0, ms / 400, fl / 100, hu / 100
         color = "人聲修飾" if self.active_preset in ("sing", "electro") else "原本"
-        kw = dict(flex=flex, humanize=humanize, color=color, metal=metal,
+        kw = dict(flex=flex, humanize=humanize, color=color, metal=metal, robot_fx=float(self.robot_fx.get()) / 100,
             mode=mode, key=0, scale="major", strength=strength, speed=speed,
             shift=float(self.shift.get()), robot=57,
             phone=bool(float(self.phone.get())), phone_dist=0.25, machine=bool(float(self.machine.get())),
@@ -488,9 +533,14 @@ class App:
         self.active_preset = None
         self.apply()
 
+    def on_personal(self):
+        if self.personal.get():
+            self.card.set(1)
+        self.apply()
+
     def toggle_card(self):
         if self.card.get():
-            if not messagebox.askyesno("關閉聲卡變音", "關閉後直播會出現你的原音。\n確定要關閉嗎？"):
+            if self.personal.get() and not messagebox.askyesno("關閉變聲", "關閉後直播會出現你的原音。\n確定要關閉嗎？"):
                 return
             self.card.set(0)
         else:
@@ -503,9 +553,13 @@ class App:
 
     def refresh_buttons(self):
         on = bool(self.card.get())
-        c = C_PINK if on else C_YELLOW
-        self.btn_card.config(text="🔒 聲卡變音：開著（按這裡關）" if on else "⚠ 聲卡變音關了＝原音！（按這裡開）",
-                             bg=c, activebackground=c, fg="#2a0a1a" if on else "#3a2a00")
+        c = C_PINK if on else (C_YELLOW if self.personal.get() else C_BTN)
+        if self.personal.get():
+            txt = "🔒 變聲：開著（專屬模式，按這裡關）" if on else "⚠ 變聲關了＝原音！（按這裡開）"
+        else:
+            txt = "🎭 變聲（升 1.5 半音）：開" if on else "🎭 變聲：關（原聲）"
+        self.btn_card.config(text=txt,
+                             bg=c, activebackground=c, fg="#2a0a1a" if on else ("#3a2a00" if self.personal.get() else C_TXT))
         b = bool(self.bgm_on.get())
         c = C_GREEN if b else C_BTN
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
@@ -516,7 +570,7 @@ class App:
         none = self.active_preset is None
         c = C_GREEN if none else C_BTN
         self.btn_none.config(bg=c, activebackground=c, fg="#0b2216" if none else C_TXT)
-        voice = "聲卡變音" if on else "⚠ 原音"
+        voice = "變聲" if on else ("⚠ 原音" if self.personal.get() else "原聲")
         fxname = PRESET_NAMES[self.active_preset].split(" ", 1)[1] if self.active_preset else "無效果"
         extra = ""
         if self.active_preset == "electro":
@@ -525,15 +579,16 @@ class App:
         self.now_label.config(text="現在送出去的聲音 ＝ %s ＋ %s%s%s" % (voice, fxname, extra, col))
         mark = lambda ok: "✅" if ok else "⬜"
         kind = {"talk": "說話（只修飾音色，不修音）", "sing": "自然修音（拉準走音、保留顫音）",
-                "electro": "電音人聲（%s）" % self.el_style.get(), "phone": "電話音", "machine": "答錄機音"}
-        self.st_funcs.config(text="目前功能：　%s 聲卡變音　　%s %s　　%s 伴奏" % (
+                "electro": "電音人聲（%s）" % self.el_style.get(), "phone": "電話音", "machine": "答錄機音",
+                "robot": "機器人聲"}
+        self.st_funcs.config(text="目前功能：　%s 變聲　　%s %s　　%s 伴奏" % (
             mark(on), mark(self.active_preset is not None),
             kind.get(self.active_preset, "沒有修音、沒有電音（一般聲音）"), mark(bool(self.bgm_on.get()))),
-            fg=C_TXT if on else C_YELLOW)
+            fg=C_TXT if (on or not self.personal.get()) else C_YELLOW)
         for k, btn in self.preset_btns.items():
             c = C_GREEN if self.active_preset == k else C_BTN
             btn.config(bg=c, activebackground=c, fg="#0b2216" if self.active_preset == k else C_TXT)
-        self.btn_play_wet.config(text="■ 停止" if self.eng.playing else "▶ 聽錄音")
+        self.btn_play_wet.config(text="■ 停止" if self.eng.playing else "▶ 聽選的那段")
 
     # ------------------------------------------------------------ 錄音
     def toggle_rec(self):
@@ -543,10 +598,37 @@ class App:
         if self.eng.recording:
             secs = self.eng.stop_recording()
             self.btn_rec.config(text="● 錄音", bg=C_BTN, activebackground=C_BTN)
-            self.rec_label.config(text="錄好了 %.1f 秒，按「聽錄音」聽聽看" % secs)
+            wet, dry = self.eng.get_recording("wet"), self.eng.get_recording("dry")
+            if wet is None or len(wet) == 0:
+                self.rec_label.config(text="沒有錄到聲音")
+                return
+            self._take_no += 1
+            name = "第 %d 段　%s　%.1f 秒" % (self._take_no, datetime.datetime.now().strftime("%H:%M:%S"), secs)
+            self.takes.append(dict(name=name, wet=wet, dry=dry, secs=secs))
+            if len(self.takes) > 30:                       # 最多暫存 30 段，太舊的自動移除
+                self.takes.pop(0)
+            self.refresh_takes(select=len(self.takes) - 1)
+            self.rec_label.config(text="已暫存「%s」，可以再錄下一段" % name.split("　")[0])
         else:
+            if self.eng.playing:
+                self.eng.stop_play()
             self.eng.start_recording()
             self.btn_rec.config(text="■ 停止錄音", bg="#c2306f", activebackground="#c2306f")
+
+    def refresh_takes(self, select=None):
+        self.take_list.delete(0, "end")
+        for t in self.takes:
+            self.take_list.insert("end", t["name"])
+        if select is not None and self.takes:
+            self.take_list.selection_clear(0, "end")
+            self.take_list.selection_set(select)
+            self.take_list.see(select)
+
+    def selected_take(self):
+        sel = self.take_list.curselection()
+        if sel:
+            return sel[0]
+        return len(self.takes) - 1 if self.takes else None
 
     def play(self, which="wet"):
         if self.eng.playing:
@@ -556,29 +638,43 @@ class App:
             return
         if self.eng.recording:
             self.toggle_rec()
-        if not self.eng.has_recording():
+        i = self.selected_take()
+        if i is None:
             messagebox.showinfo("聽錄音", "還沒有錄音。")
             return
-        if not self.eng.play(which):
+        if not self.eng.play_array(self.takes[i][which]):
             messagebox.showinfo("聽錄音", "請先按「開始」才能在耳機播放。")
             return
         self._play_which = which
+        self.rec_label.config(text="播放中：" + self.takes[i]["name"])
         self.refresh_buttons()
 
+    def delete_take(self):
+        i = self.selected_take()
+        if i is None:
+            return
+        if self.eng.playing:
+            self.eng.stop_play()
+        name = self.takes.pop(i)["name"]
+        self.refresh_takes(select=min(i, len(self.takes) - 1) if self.takes else None)
+        self.rec_label.config(text="已刪除「%s」" % name.split("　")[0])
+
     def save_rec(self):
-        if not self.eng.has_recording():
+        i = self.selected_take()
+        if i is None:
             messagebox.showinfo("存檔", "還沒有錄音。")
             return
+        t = self.takes[i]
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         d = rec_dir()
         try:
-            self.eng.save_wav("wet", os.path.join(d, stamp + "_處理後.wav"))
-            self.eng.save_wav("dry", os.path.join(d, stamp + "_原聲.wav"))
+            write_wav(os.path.join(d, "%s_第%d段_處理後.wav" % (stamp, i + 1)), t["wet"])
+            write_wav(os.path.join(d, "%s_第%d段_原聲.wav" % (stamp, i + 1)), t["dry"])
         except Exception as e:
             log_error(traceback.format_exc())
             messagebox.showerror("存檔失敗", str(e))
             return
-        self.rec_label.config(text="已存到：" + d)
+        self.rec_label.config(text="「%s」已存到：%s" % (t["name"].split("　")[0], d))
         try:
             os.startfile(d)
         except Exception:
@@ -594,7 +690,8 @@ class App:
         def ui(fn, *a):
             return lambda: self.root.after(0, fn, *a)
 
-        hk = {"<ctrl>+<alt>+%d" % (i + 1): ui(self.preset, k) for i, k in enumerate(PRESET_NAMES)}
+        keys = {"talk": "1", "sing": "2", "electro": "3", "phone": "4", "machine": "5", "robot": "7"}
+        hk = {"<ctrl>+<alt>+" + keys[k]: ui(self.preset, k) for k in PRESET_NAMES}
         hk.update({"<ctrl>+<alt>+6": ui(self.toggle_card), "<ctrl>+<alt>+b": ui(self.toggle_bgm),
                    "<ctrl>+<alt>+r": ui(self.toggle_rec)})
         try:

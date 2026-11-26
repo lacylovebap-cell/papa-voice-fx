@@ -36,6 +36,20 @@ a.preset("electro")
 for _ in range(10):
     root.update(); time.sleep(0.05)
 check("切到電音後有修正目標音", a.eng.info[2] is not None)
+# 錄兩段，暫存在清單
+for k in range(2):
+    a.toggle_rec()
+    for _ in range(12):
+        root.update(); time.sleep(0.05)
+    a.toggle_rec()
+check("錄兩段都暫存在清單", len(a.takes) == 2 and a.take_list.size() == 2, str([t["name"] for t in a.takes]))
+check("每段都有錄到聲音", all(t["secs"] > 0.3 and abs(t["wet"]).max() > 0.05 for t in a.takes))
+a.take_list.selection_clear(0, "end"); a.take_list.selection_set(0)
+a.play("wet")
+for _ in range(4):
+    root.update(); time.sleep(0.05)
+check("可以播放第 1 段", a.eng.playing)
+a.play("wet")
 a.toggle()   # 停止
 check("按停止後停止", not a.eng.running)
 a.on_close()

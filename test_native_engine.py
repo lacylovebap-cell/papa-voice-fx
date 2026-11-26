@@ -75,12 +75,25 @@ e.stop_play()
 time.sleep(0.05)
 check("停止播放", not e.playing)
 
+# 暫存多段：取出錄音、播放任一段
+take = e.get_recording("wet")
+check("取出錄音（暫存用）", len(take) == len(wet))
+check("播放暫存的某一段", e.play_array(take[:24000]) and e.playing)
+time.sleep(0.8)
+check("那一段播完自動停", not e.playing)
+
 # 停止、再開（不同緩衝大小）
 for blk in (64, 256, 512):
     e.stop()
     e.start(ins[0][0], outs[0][0], outs[0][0], block=blk)
-    time.sleep(0.6)
-    check("緩衝 %d 正常運作" % blk, e.lv["mon"] > 0.1 and e.lv["out"] > 0.1)
+    ok = False
+    for _ in range(40):
+        time.sleep(0.05)
+        e._cache = None
+        if e.lv["mon"] > 0.1 and e.lv["out"] > 0.1:
+            ok = True
+            break
+    check("緩衝 %d 正常運作" % blk, ok)
 check("沒有處理錯誤", ne.LIB is not None and e._st()[12] == 0)
 e.stop()
 check("停止後不再運作", ne.LIB.papa_running() == 0)

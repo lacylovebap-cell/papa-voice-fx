@@ -555,7 +555,7 @@ static const ColorBand COLORS[6][5] = {
 struct FxParams {
     bool phone = false; double phone_dist = 0.25; bool machine = false;
     double eq_lo = 0, eq_mid = 0, eq_hi = 0, comp = 0.4, verb = 0.15;
-    bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0;
+    bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0, robot_fx = 0;
 };
 
 struct VoiceFx {
@@ -576,6 +576,7 @@ struct VoiceFx {
     Biquad color_eq[5];
     int color_cur = -1;
     Reverb verb;
+    double ring_ph = 0;
     std::vector<double> t1, t2;
 
     VoiceFx(double s = 48000, double window_ms = 21.0)
@@ -641,6 +642,15 @@ struct VoiceFx {
         if (p.card) { card_eq[0].run(y, n); card_eq[1].run(y, n); }
         else { card_eq[0].reset(); card_eq[1].reset(); }
         bool has_t = tuner.voiced && tuner.p.mode != M_OFF;
+        // 機器人聲：環形調變（55 Hz）
+        if (p.robot_fx > 0.001) {
+            double a = 0.7 * p.robot_fx, inc = 2 * PI * 55.0 / sr;
+            for (int i = 0; i < n; i++) {
+                ring_ph += inc;
+                if (ring_ph > 2 * PI) ring_ph -= 2 * PI;
+                y[i] = y[i] * (1 - a) + y[i] * std::sin(ring_ph) * a * 1.6;
+            }
+        }
         metal.process(y, n, p.metal, has_t, tuner.target);
         if (p.electro_fx > 0.001) electro.process(y, n, p.electro_fx);
         for (auto& b : color_eq) b.run(y, n);
@@ -648,9 +658,10 @@ struct VoiceFx {
         deesser.process(y, n, p.deess);
         comp.process(y, n);
         double v = p.verb;
+        verb.g = 0.80 + 0.13 * v;   // 拉越大，殘響越長
         for (int i = 0; i < n; i++) {
             double rv = verb.tick(y[i]);
-            if (v > 0.001) y[i] += rv * v * 0.8;
+            if (v > 0.001) y[i] += rv * v * 1.6;
         }
         for (int i = 0; i < n0; i++) io[i] = (float)std::max(-1.0, std::min(1.0, y[i]));
     }

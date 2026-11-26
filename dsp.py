@@ -1,4 +1,4 @@
-"""怕怕調音台 - DSP 核心（純 numpy / scipy，可離線測試）
+"""PAPA 調音台 - DSP 核心（純 numpy / scipy，可離線測試）
 
 處理順序：電音/變調 → 電話音 → 答錄機音 → EQ → 壓縮 → 混響
 所有處理以「區塊」為單位，區塊長度需為 4 的倍數（建議 128 或 256）。
@@ -602,7 +602,7 @@ class VoiceFx:
         self.tuner = Tuner(sr, 12.0 if low_latency else 21.0)
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
-            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0,
+            eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0, robot_fx=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -621,6 +621,7 @@ class VoiceFx:
         self.electro = ElectroLayer(sr)
         self.deesser = DeEsser(sr)
         self.metal = MetalComb(sr)
+        self.ring_ph = 0.0
         self.color_eq = []
         self._color = None
         self.verb = Reverb(sr)
@@ -700,6 +701,14 @@ class VoiceFx:
             for f in self.card_eq:
                 f.reset()
         tg = self.tuner.target if (self.tuner.voiced and self.tuner.p["mode"] != "off") else None
+        # 機器人聲：環形調變（55 Hz）讓聲音像機器、金屬喇叭
+        rf = float(self.p["robot_fx"])
+        if rf > 0.001:
+            n = len(y)
+            ph = self.ring_ph + 2 * np.pi * 55.0 / self.sr * np.arange(1, n + 1)
+            a = 0.7 * rf
+            y = y * (1 - a) + y * np.sin(ph) * a * 1.6
+            self.ring_ph = float(ph[-1] % (2 * np.pi))
         y = self.metal.process(y, float(self.p["metal"]), tg)
         if self.p["electro_fx"] > 0.001:
             y = self.electro.process(y, float(self.p["electro_fx"]))
@@ -709,9 +718,11 @@ class VoiceFx:
             y = f(y)
         y = self.deesser.process(y, float(self.p["deess"]))
         y = self.comp.process(y)
-        v = self.p["verb"]
+        v = float(self.p["verb"])
+        # 混響：拉越大，殘響越長（回授 0.80→0.93）、越濕（0→1.6 倍）
+        self.verb.g = 0.80 + 0.13 * v
         if v > 0.001:
-            y = y + self.verb.process(y) * (v * 0.8)
+            y = y + self.verb.process(y) * (v * 1.6)
         else:
             self.verb.process(y)  # 保持尾巴狀態連續
         y = np.clip(y, -1.0, 1.0)

@@ -19,7 +19,13 @@ root.withdraw()
 a = app.App(root)
 root.update()
 fx = a.eng
-check("開啟時聲卡變音預設鎖定", a.card.get() == 1 and fx.params.get("card") is True)
+check("一般歌手：開啟時是原聲（變聲預設關）", a.personal.get() == 0 and a.card.get() == 0 and fx.params.get("card") is False)
+a.card.set(0); a.toggle_card()
+check("一般歌手：變聲可以直接開，不用確認", a.card.get() == 1)
+a.toggle_card()
+check("一般歌手：變聲可以直接關", a.card.get() == 0)
+a.personal.set(1); a.on_personal()
+check("打開專屬模式：變聲自動開啟並鎖定", a.card.get() == 1 and fx.params.get("card") is True)
 
 for name in app.PRESETS:
     a.preset(name)
@@ -82,14 +88,28 @@ check("切換所有效果後，去齒音仍是 55%", abs(fx.params["deess"] - 0.
 a.eng.running = True
 a.eng.lv.update(inp=0.5, mon=0.3, out=0.4, bgm=0.2)
 a.tick(); root.update()
-check("狀態面板：顯示目前功能", "聲卡變音" in a.st_funcs.cget("text"))
+check("狀態面板：顯示目前功能", "變聲" in a.st_funcs.cget("text"))
+# 機器人
+a.preset("robot")
+check("機器人：固定音高模式＋環形調變＋金屬共鳴", fx.params["mode"] == "robot" and fx.params["robot_fx"] == 1.0 and fx.params["metal"] > 0)
+a.preset("robot")
+check("再按機器人：關掉", fx.params["mode"] == "off" and fx.params["robot_fx"] == 0)
+# 暫存多段錄音（不需要真的聲卡：直接放兩段進清單）
+import numpy as _np
+a.takes = []
+for k in range(2):
+    a.takes.append(dict(name="第 %d 段　測試　1.0 秒" % (k + 1), wet=_np.zeros(48000, _np.float32), dry=_np.zeros(48000, _np.float32), secs=1.0))
+a.refresh_takes(select=1)
+check("暫存清單顯示兩段", a.take_list.size() == 2 and a.selected_take() == 1)
+a.delete_take()
+check("刪除選的那段後剩一段", len(a.takes) == 1 and a.take_list.size() == 1)
 check("各管道波形有跳動", a.wave_inp.hist[-1] > 0 and a.wave_bgm.hist[-1] > 0 and a.wave_out.hist[-1] > 0)
 a.eng.running = False
 a.toggle_adv(); root.update(); a.toggle_adv()
 check("進階設定可以展開收起", True)
 a.preset("electro"); a.clear_fx()
 check("無效果：一鍵清掉所有效果", a.active_preset is None and fx.params["mode"] == "off")
-check("狀態文字：聲卡變音＋無效果", "聲卡變音" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"))
+check("狀態文字：變聲＋無效果", "變聲" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"))
 check("超低延遲預設關閉", a.ultra.get() == 0)
 # 自動防爆音：緩衝不足一直增加 → 區塊加大
 import types
@@ -123,6 +143,7 @@ for sv in (srv1, srv2):
 a.refresh_buttons()
 root.update()
 check("按鈕文字顯示鎖定", "開著" in str(a.btn_card.cget("text")))
+check("視窗標題是 PAPA 調音台", root.title() == "PAPA 調音台")
 a.save_settings()
 root.destroy()
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")

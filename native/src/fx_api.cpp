@@ -45,6 +45,7 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "color") p.color = (int)v;
     else if (k == "deess") p.deess = v;
     else if (k == "metal") p.metal = v;
+    else if (k == "robot_fx") p.robot_fx = v;
     else if (k == "window_ms") fx->tuner.set_window(v);
     else return 0;
     if (scale_changed) fx->tuner.update_scale();

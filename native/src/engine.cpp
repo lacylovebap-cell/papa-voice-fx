@@ -206,6 +206,7 @@ struct Engine {
             else if (k == "color") p.color = (int)v;
             else if (k == "deess") p.deess = v;
             else if (k == "metal") p.metal = v;
+            else if (k == "robot_fx") p.robot_fx = v;
             if (sc) fx->tuner.update_scale();
             fx->apply();
         }
@@ -536,6 +537,17 @@ PAPA_API int papa_play(int which) {
     return 1;
 }
 PAPA_API void papa_play_stop() { E().playing = false; }
+
+// 播放任意一段（暫存清單裡的某一段錄音）
+PAPA_API int papa_play_buffer(const float* data, int n) {
+    Engine& e = E();
+    if (!e.running || n <= 0) return 0;
+    e.playing = false;
+    e.play_buf.assign(data, data + n);
+    e.play_pos = 0;
+    e.playing = true;
+    return 1;
+}
 
 // 取得錄音資料（給 Python 存 WAV）
 PAPA_API int papa_rec_copy(int which, float* out, int cap) {

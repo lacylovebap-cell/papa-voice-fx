@@ -1,4 +1,4 @@
-"""怕怕調音台 - 即時音訊引擎（sounddevice）
+"""PAPA 調音台 - 即時音訊引擎（sounddevice）
 
 麥克風 → VoiceFx → 兩路輸出：監聽（耳機）與直播（虛擬麥克風）。
 兩路輸出各自用一條 Ring 緩衝，避免不同裝置的時脈不同步造成爆音。
@@ -269,6 +269,17 @@ class Engine:
     @property
     def playing(self):
         return self.play_data is not None
+
+    def get_recording(self, which):
+        d = self.rec_data.get(which)
+        return None if d is None else d.copy()
+
+    def play_array(self, arr):
+        if not self.running:
+            return False
+        self.play_pos = 0
+        self.play_data = np.asarray(arr, np.float32)
+        return True
 
     def save_wav(self, which, path):
         d = self.rec_data.get(which)

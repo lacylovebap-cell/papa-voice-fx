@@ -320,6 +320,30 @@ s0, v0 = sib_test(0.0); s1, v1 = sib_test(0.7)
 check("去齒音：齒音被壓下來", 20 * np.log10(s1 / s0) < -5, "%.1f dB" % (20 * np.log10(s1 / s0)))
 check("去齒音：母音幾乎不變", abs(20 * np.log10(v1 / v0)) < 1.0, "%.2f dB" % (20 * np.log10(v1 / v0)))
 
+# ---------- 混響力度：100% 要夠大（停掉後 0.1 秒殘響 > -8 dB）
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=1.0)
+xr = np.zeros(SR * 2, np.float32); tr = np.arange(int(SR * 0.3)) / SR; xr[:len(tr)] = 0.4 * np.sin(2 * np.pi * 330 * tr)
+orv = np.concatenate([fx.process(xr[s0:s0 + 256]) for s0 in range(0, len(xr) // 256 * 256, 256)])
+ref = np.sqrt(np.mean(orv[:int(SR * 0.3)] ** 2)); aft = np.sqrt(np.mean(orv[int(SR * 0.4):int(SR * 0.41)] ** 2))
+check("混響 100% 力度夠大", 20 * np.log10(aft / ref) > -8, "%.1f dB" % (20 * np.log10(aft / ref)))
+check("混響 100% 仍會慢慢消失（不會無限延長）", np.sqrt(np.mean(orv[-4800:] ** 2)) < aft * 0.3)
+
+# ---------- 機器人聲：音高固定（像機器）＋環形調變
+tg = np.arange(SR * 2) / SR
+fg = 200 * 2 ** (np.linspace(0, 4, len(tg)) / 12)          # 一直往上滑 4 個半音
+pg = 2 * np.pi * np.cumsum(fg) / SR
+xg = (0.3 * np.sin(pg) + 0.15 * np.sin(2 * pg)).astype(np.float32)
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="robot", robot=57, strength=1.0, speed=0.0, robot_fx=0.0)
+og = np.concatenate([fx.process(xg[s0:s0 + 256]) for s0 in range(0, len(xg) // 256 * 256, 256)])
+pa = est_freq(og[:SR]); pb = est_freq(og[SR:])
+check("機器人：唱的音在滑，輸出音高固定不動", abs(pa - pb) < 4 and abs(pa - 220) < 5, "%.1f / %.1f Hz" % (pa, pb))
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode="robot", robot=57, strength=1.0, speed=0.0, robot_fx=1.0)
+og2 = np.concatenate([fx.process(rich(220)(np.arange(SR * 2) / SR).astype(np.float32)[s0:s0 + 256]) for s0 in range(0, SR * 2 // 256 * 256, 256)])
+sp = np.abs(np.fft.rfft(og2[SR:SR + 32768] * np.hanning(32768))); fr = np.fft.rfftfreq(32768, 1 / SR)
+side = sp[np.abs(fr - 275) < 3].max() / sp[np.abs(fr - 220) < 3].max()
+check("機器人：有金屬機械感（環形調變的邊頻）", side > 0.2, "邊頻/主音 %.2f" % side)
+check("機器人：輸出有效", np.all(np.isfinite(og2)) and np.max(np.abs(og2)) <= 1.0)
+
 # ---------- 全效果同時開 + 效能
 fx = VoiceFx(SR)
 fx.set(mode="scale", key=0, scale="major", strength=1.0, phone=True, machine=True, comp=0.5, verb=0.5, eq_lo=3, eq_mid=2, eq_hi=3)
