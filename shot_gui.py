@@ -32,7 +32,17 @@ def shot(name):
     x, y = root.winfo_rootx(), root.winfo_rooty()
     w, h = root.winfo_width(), root.winfo_height()
     print(name, "screen", root.winfo_screenwidth(), root.winfo_screenheight(), "win", x, y, w, h)
-    ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True).save(os.path.join("shots", name + ".png"))
+    img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
+    img.save(os.path.join("shots", name + ".png"))
+    # 也印成文字（base64 JPEG），方便從紀錄裡取回
+    import base64, io
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=80)
+    b = base64.b64encode(buf.getvalue()).decode()
+    print("SHOT-BEGIN %s" % name)
+    for i in range(0, len(b), 4000):
+        print("SHOT-DATA " + b[i:i + 4000])
+    print("SHOT-END %s" % name)
 
 
 root.lift(); root.attributes("-topmost", True)
