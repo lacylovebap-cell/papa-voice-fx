@@ -229,6 +229,8 @@ class Engine:
         self.recording = False
         self.rec_wet = []
         self.rec_dry = []
+        self.rec_voice = []
+        self.rec_bgm = []
         self.rec_samples = 0
         self.rec_max = SR * 60 * 5  # 最長 5 分鐘
         self.rec_data = {"wet": None, "dry": None}
@@ -239,14 +241,15 @@ class Engine:
     def start_recording(self):
         self.stop_play()
         self.rec_wet, self.rec_dry, self.rec_samples = [], [], 0
+        self.rec_voice, self.rec_bgm = [], []
         self.recording = True
 
     def stop_recording(self):
         """停止錄音，回傳錄到的秒數。"""
         self.recording = False
-        for k, lst in (("wet", self.rec_wet), ("dry", self.rec_dry)):
+        for k, lst in (("wet", self.rec_wet), ("dry", self.rec_dry), ("voice", self.rec_voice), ("bgm", self.rec_bgm)):
             self.rec_data[k] = np.concatenate(lst) if lst else None
-        self.rec_wet, self.rec_dry = [], []
+        self.rec_wet, self.rec_dry, self.rec_voice, self.rec_bgm = [], [], [], []
         d = self.rec_data["wet"]
         return 0.0 if d is None else len(d) / SR
 
@@ -338,6 +341,8 @@ class Engine:
             if self.recording and self.rec_samples < self.rec_max:
                 self.rec_wet.append(out_mix.astype(np.float32))
                 self.rec_dry.append(dry.copy())
+                self.rec_voice.append((y * self.gains["out"]).astype(np.float32))
+                self.rec_bgm.append((np.zeros(len(y)) + bg_mix).astype(np.float32))
                 self.rec_samples += len(y)
             pd = self.play_data
             if pd is not None:
@@ -489,7 +494,7 @@ class Engine:
                 self.bgm_ring = None
         self.bgm_fifo = np.zeros(0)
         try:
-            shifter = self.fx.tuner.W / 2 + 3
+            shifter = self.fx.tuner.SHIFT_LAT
             if self.duplex:
                 li, lo = opened[0].latency
                 rt = (li + lo) * SR + shifter

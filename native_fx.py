@@ -25,7 +25,8 @@ def _load():
                 lib.papa_fx_set.restype = ctypes.c_int
                 lib.papa_fx_process.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
                 lib.papa_fx_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)]
-                lib.papa_fx_tap_phase.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)]
+                lib.papa_fx_side.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+                lib.papa_fx_shift_state.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)]
                 return lib
     raise OSError("找不到 papa_engine 函式庫")
 
@@ -48,11 +49,20 @@ class _TunerView:
         self._fx = fx
         self.keyt = _KeyT(fx)
 
+    SHIFT_LAT = 120
+
+    def _state(self):
+        a = (ctypes.c_double * 3)()
+        LIB.papa_fx_shift_state(self._fx.h, a)
+        return a
+
     @property
-    def tph(self):
-        a = (ctypes.c_double * 2)()
-        LIB.papa_fx_tap_phase(self._fx.h, a)
-        return [a[0], a[1]]
+    def da(self):
+        return self._state()[0]
+
+    @property
+    def splices(self):
+        return int(self._state()[2])
 
     @property
     def cur(self):
@@ -103,4 +113,7 @@ class VoiceFx:
         LIB.papa_fx_process(self.h, buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(buf))
         inf = self._info()
         self.info = (inf[0], None if inf[1] < 0 else inf[1], None if inf[2] < 0 else inf[2])
+        sd = np.zeros(len(buf), np.float32)
+        LIB.papa_fx_side(self.h, sd.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(buf))
+        self.side = sd
         return buf

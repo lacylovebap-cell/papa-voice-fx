@@ -131,7 +131,7 @@ struct Engine {
     std::chrono::steady_clock::time_point t_start;
 
     // 錄音／回放
-    std::vector<float> rec_wet, rec_dry;
+    std::vector<float> rec_wet, rec_dry, rec_voice, rec_bgm;   // 直播混音／原聲／處理後人聲／伴奏（分開存才能事後對齊）
     std::atomic<size_t> rec_n{0};
     std::atomic<bool> recording{false};
     size_t rec_max = (size_t)SR * 60 * 5;
@@ -193,6 +193,7 @@ struct Engine {
             else if (k == "humanize") t.humanize = v;
             else if (k == "sticky") t.sticky = v;
             else if (k == "predict") t.predict = v;
+            else if (k == "vibrato") t.vibrato = v;
             else if (k == "phone") p.phone = v > 0.5;
             else if (k == "phone_dist") p.phone_dist = v;
             else if (k == "machine") p.machine = v > 0.5;
@@ -200,13 +201,13 @@ struct Engine {
             else if (k == "eq_mid") p.eq_mid = v;
             else if (k == "eq_hi") p.eq_hi = v;
             else if (k == "comp") p.comp = v;
-            else if (k == "verb") p.verb = v;
             else if (k == "card") p.card = v > 0.5;
             else if (k == "electro_fx") p.electro_fx = v;
             else if (k == "color") p.color = (int)v;
             else if (k == "deess") p.deess = v;
             else if (k == "metal") p.metal = v;
             else if (k == "robot_fx") p.robot_fx = v;
+            else if (fx->set_reverb_key(k, v)) return;
             if (sc) fx->tuner.update_scale();
             fx->apply();
         }
@@ -287,7 +288,10 @@ struct Engine {
         if (recording.load()) {
             size_t n0 = rec_n.load();
             size_t k = std::min((size_t)frames, rec_max - std::min(rec_max, n0));
-            for (size_t i = 0; i < k; i++) { rec_wet[n0 + i] = tmp_out[i]; rec_dry[n0 + i] = tmp_in[i]; }
+            for (size_t i = 0; i < k; i++) {
+                rec_wet[n0 + i] = tmp_out[i]; rec_dry[n0 + i] = tmp_in[i];
+                rec_voice[n0 + i] = (float)(tmp_y[i] * g_out); rec_bgm[n0 + i] = (float)bg_mix[i];
+            }
             rec_n.store(n0 + k);
         }
 
@@ -305,11 +309,14 @@ struct Engine {
         }
         lim_mon.process(mon, frames);
         float pk_mon = 0;
+        const float* sd = fx->side.data();
+        bool use_side = !playing.load() && (int)fx->side.size() >= frames;
         for (int i = 0; i < frames; i++) {
             float v = (float)mon[i];
             pk_mon = std::max(pk_mon, std::fabs(v));
-            out_stereo[2 * i] = v;
-            out_stereo[2 * i + 1] = v;
+            float w = use_side ? (float)(sd[i] * g_mon) : 0.f;   // 混響左右寬度（只有耳機聽得到）
+            out_stereo[2 * i] = std::max(-1.f, std::min(1.f, v + w));
+            out_stereo[2 * i + 1] = std::max(-1.f, std::min(1.f, v - w));
         }
         lv_mon.store(pk_mon);
     }
@@ -372,6 +379,7 @@ struct Engine {
         bgm_fifo.assign((size_t)SR, 0.0); bgm_fifo_len = 0;
         xruns = 0; errors = 0;
         rec_wet.assign(rec_max, 0.f); rec_dry.assign(rec_max, 0.f);
+        rec_voice.assign(rec_max, 0.f); rec_bgm.assign(rec_max, 0.f);
         ensure(8192);
         fx->t1.resize(8192); fx->t2.resize(8192);
 
@@ -429,7 +437,7 @@ struct Engine {
         // 延遲估計：收音＋耳機的內部緩衝＋變調
         double cap_frames = (double)main_dev.capture.internalPeriodSizeInFrames;
         double play_frames = (double)main_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, main_dev.playback.internalPeriods);
-        double shifter = fx->tuner.W / 2.0 + 3;
+        double shifter = Tuner::SHIFT_LAT;
         double rt = cap_frames + play_frames + block + shifter;
         latency_ms = rt * 1000.0 / SR;
         bgm_comp = (long)rt;
@@ -549,10 +557,10 @@ PAPA_API int papa_play_buffer(const float* data, int n) {
     return 1;
 }
 
-// 取得錄音資料（給 Python 存 WAV）
+// 取得錄音資料（給 Python 存 WAV）which: 0=直播混音 1=原聲 2=處理後人聲 3=伴奏
 PAPA_API int papa_rec_copy(int which, float* out, int cap) {
     Engine& e = E();
-    const std::vector<float>& s = which == 0 ? e.rec_wet : e.rec_dry;
+    const std::vector<float>& s = which == 0 ? e.rec_wet : which == 1 ? e.rec_dry : which == 2 ? e.rec_voice : e.rec_bgm;
     int n = (int)std::min<size_t>(e.rec_len, (size_t)cap);
     std::memcpy(out, s.data(), sizeof(float) * n);
     return n;

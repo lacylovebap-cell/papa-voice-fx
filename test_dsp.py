@@ -194,19 +194,56 @@ for f0 in (150, 220, 330, 520):
     vals.append(hn(o, f0 * 2 ** (1.5 / 12)))
 check("變調乾淨度（諧波/雜訊 > 35 dB）", min(vals) > 35, " ".join("%.0f" % v for v in vals))
 
-# ---------- 換相時不爆音：每次重新開始的取樣點音量必須是 0
+# ---------- 接合時不爆音：高頻（> 5 kHz）不能突然冒出尖峰
+from scipy.signal import butter, sosfilt
+def worst_click(**kw):
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, **kw)
+    xx = melody(np.arange(SR * 3) / SR).astype(np.float32)
+    o = np.concatenate([fx.process(xx[s0:s0 + 256]) for s0 in range(0, len(xx) // 256 * 256, 256)]).astype(np.float64)
+    hp = sosfilt(butter(6, 5000, "hp", fs=SR, output="sos"), o)
+    e = np.sqrt(np.mean(hp[:len(hp) // 240 * 240].reshape(-1, 240) ** 2, 1))[20:]
+    return 20 * np.log10(e.max() / np.sqrt(np.mean(o[SR // 2:] ** 2)) + 1e-12), fx.tuner.splices
+for kw in (dict(card=True), dict(card=True, mode="chrom"), dict(card=True, mode="natural")):
+    w, sp = worst_click(**kw)
+    check("接合時不會啵（%s）" % "＋".join("%s=%s" % kv for kv in kw.items()), w < -45 and sp > 5, "最差 %.0f dB，接合 %d 次" % (w, sp))
+
+# ---------- 說話時（音高一直滑動）不能有細微電音／金屬感
+def speechlike(sec=3.0, scale=1.0, seed=1):
+    rg = np.random.default_rng(seed)
+    n = int(SR * sec); tt = np.arange(n) / SR
+    f0 = np.zeros(n)
+    for k in range(int(sec / 0.25) + 1):
+        a0, b0 = rg.uniform(180, 330, 2)
+        i0, i1 = int(k * 0.25 * SR), min(n, int((k + 1) * 0.25 * SR))
+        if i0 >= n:
+            break
+        f0[i0:i1] = np.linspace(a0, b0, i1 - i0)
+    f0 = np.convolve(f0, np.ones(2400) / 2400, mode="same"); f0[:2400] = f0[2400]; f0[-2400:] = f0[-2401]
+    f0 *= scale
+    ph = 2 * np.pi * np.cumsum(f0) / SR
+    xs = np.zeros(n)
+    for k in range(1, 30):
+        fk = k * f0
+        amp = (1.0 / k) * (np.exp(-((fk - 750) / 250) ** 2) * 3 + np.exp(-((fk - 1250) / 300) ** 2) * 2 + np.exp(-((fk - 2600) / 400) ** 2) + 0.15)
+        xs += amp * np.sin(k * ph) * (fk < SR / 2.2)
+    xs *= 0.25 + 0.75 * (0.5 - 0.5 * np.cos(2 * np.pi * tt / 0.25))
+    return (0.25 * xs / np.max(np.abs(xs))).astype(np.float32)
+def flutter(xs, o):
+    res = []
+    for lo, hi in ((300, 600), (600, 1200), (1200, 2400), (2400, 4800)):
+        sos = butter(4, [lo, hi], btype="band", fs=SR, output="sos")
+        a0, b0 = sosfilt(sos, xs.astype(np.float64)), sosfilt(sos, o.astype(np.float64))
+        ea = np.sqrt(np.mean(a0[:len(a0) // 480 * 480].reshape(-1, 480) ** 2, 1)) + 1e-6
+        eb = np.sqrt(np.mean(b0[:len(b0) // 480 * 480].reshape(-1, 480) ** 2, 1)) + 1e-6
+        dd = 20 * np.log10(eb / ea)[50:]
+        sm = np.convolve(dd, np.ones(21) / 21, mode="same")
+        res.append(np.std((dd - sm)[20:-20]))
+    return float(np.mean(res))
+xs = speechlike()
 fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, card=True)
-xx = melody(np.arange(SR * 3) / SR).astype(np.float32)
-bad = 0; cnt = 0
-for s0 in range(0, len(xx) // 256 * 256, 256):
-    pb = list(fx.tuner.tph); fx.process(xx[s0:s0 + 256])
-    for tp in (0, 1):
-        if abs(fx.tuner.tph[tp] - pb[tp]) > 0.3:
-            cnt += 1
-            # 回推換相當下的相位：升調時應接近 1（增益 0）
-            if not (fx.tuner.tph[tp] > 0.95 or fx.tuner.tph[tp] < 0.05):
-                bad += 1
-check("換相時從 0 音量開始（不會啵）", cnt > 5 and bad == 0, f"換相 {cnt} 次，異常 {bad}")
+os_ = np.concatenate([fx.process(xs[s0:s0 + 256]) for s0 in range(0, len(xs) // 256 * 256, 256)])
+fl = flutter(xs[:len(os_)], os_)
+check("說話模式＋變聲：沒有細微電音感（頻段抖動 < 1.0 dB，理想值約 0.7）", fl < 1.0, "%.2f dB" % fl)
 
 # ---------- 電音質感層
 x, o0, _ = run(noise, seconds=1.0, mode="chrom")
@@ -327,6 +364,79 @@ orv = np.concatenate([fx.process(xr[s0:s0 + 256]) for s0 in range(0, len(xr) // 
 ref = np.sqrt(np.mean(orv[:int(SR * 0.3)] ** 2)); aft = np.sqrt(np.mean(orv[int(SR * 0.4):int(SR * 0.41)] ** 2))
 check("混響 100% 力度夠大", 20 * np.log10(aft / ref) > -8, "%.1f dB" % (20 * np.log10(aft / ref)))
 check("混響 100% 仍會慢慢消失（不會無限延長）", np.sqrt(np.mean(orv[-4800:] ** 2)) < aft * 0.3)
+
+# ---------- 爆電（金屬共鳴最強）：換音、停頓時不能有「啵啵啵」
+def notes_with_gaps():
+    n = SR * 3; xx = np.zeros(n)
+    nts = [57, 61, 64, 59]
+    for k in range(int(3 / 0.25)):
+        i0 = int(k * 0.25 * SR); i1 = i0 + int(0.2 * SR)
+        f = hz(nts[k % 4]); tt = np.arange(i1 - i0) / SR
+        env = np.minimum(1, np.minimum(tt / 0.01, (tt[-1] - tt) / 0.01))
+        xx[i0:i1] = (0.3 * np.sin(2 * np.pi * f * tt) + 0.12 * np.sin(4 * np.pi * f * tt)) * env
+    return xx.astype(np.float32)
+xg = notes_with_gaps()
+fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, card=True, mode="electro", strength=1.0, speed=0.0, electro_fx=0.9, metal=1.0)
+og = np.concatenate([fx.process(xg[s0:s0 + 256]) for s0 in range(0, len(xg) // 256 * 256, 256)]).astype(np.float64)
+jump = np.abs(np.diff(og))[SR // 2:].max() / np.abs(np.diff(xg.astype(np.float64))).max()
+check("爆電：換音和停頓時波形不會突然跳（不會啵啵啵）", jump < 2.0, "最大跳動是原音的 %.2f 倍（舊版 7 倍）" % jump)
+
+# ---------- 自然顫音（Auto-Tune Natural Vibrato）
+def vib_std(db, mode="natural"):
+    tv2 = np.arange(SR * 3) / SR
+    fv2 = 220 * 2 ** ((0.3 * np.sin(2 * np.pi * 5.0 * tv2)) / 12)
+    pv2 = 2 * np.pi * np.cumsum(fv2) / SR
+    xv2 = (0.3 * np.sin(pv2) + 0.15 * np.sin(2 * pv2)).astype(np.float32)
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, mode=mode, strength=1.0, speed=0.15, vibrato=db)
+    o = np.concatenate([fx.process(xv2[s0:s0 + 256]) for s0 in range(0, len(xv2) // 256 * 256, 256)])
+    return float(np.std(pitch_track(o)))
+v0, vup, vdn = vib_std(0.0), vib_std(6.0), vib_std(-12.0)
+check("自然顫音 +6 dB：顫音變大", vup > v0 * 1.5, "%.0f → %.0f cents" % (v0, vup))
+check("自然顫音 -12 dB：顫音變小", vdn < v0 * 0.6, "%.0f → %.0f cents" % (v0, vdn))
+
+# ---------- 多層混響：每一層都能細調
+def rv_run(sec=2.0, **kw):
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, **kw)
+    burst = np.zeros(int(SR * sec), np.float32)
+    rg = np.random.default_rng(3)
+    burst[2000:4400] = (0.4 * rg.standard_normal(2400)).astype(np.float32)
+    outs, sides = [], []
+    for s0 in range(0, len(burst) // 256 * 256, 256):
+        outs.append(fx.process(burst[s0:s0 + 256])); sides.append(np.array(fx.side[:256]))
+    return burst, np.concatenate(outs).astype(np.float64), np.concatenate(sides).astype(np.float64)
+def tail_db(o, t0, t1):
+    a, b = 4400 + int(t0 * SR), 4400 + int(t1 * SR)
+    return 10 * np.log10(np.mean(o[a:b] ** 2) + 1e-20)
+_, o_room, _ = rv_run(rv1_type=2, rv1_mix=0.6, rv1_size=0.45)
+_, o_church, _ = rv_run(rv1_type=5, rv1_mix=0.6, rv1_size=0.9)
+check("混響類型：教堂的殘響比房間長很多", tail_db(o_church, 0.8, 1.2) - tail_db(o_room, 0.8, 1.2) > 15,
+      "%.0f dB" % (tail_db(o_church, 0.8, 1.2) - tail_db(o_room, 0.8, 1.2)))
+_, o_s1, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_size=0.3)
+_, o_s2, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_size=0.95)
+check("殘響長度：拉越大尾巴越長", tail_db(o_s2, 0.6, 1.0) - tail_db(o_s1, 0.6, 1.0) > 10)
+_, ob1, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_bright=1.0)
+_, ob0, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_bright=0.0)
+hl = lambda o: band_energy(o[4400 + SR // 5:4400 + SR // 5 + 16384], 5000, 12000) / band_energy(o[4400 + SR // 5:4400 + SR // 5 + 16384], 300, 1500)
+check("明亮度：調暗後尾巴的高頻少很多", hl(ob0) < hl(ob1) * 0.3, "%.3f 倍" % (hl(ob0) / hl(ob1)))
+_, op0, _ = rv_run(rv1_type=3, rv1_mix=0.6, rv1_pre=0)
+_, op8, _ = rv_run(rv1_type=3, rv1_mix=0.6, rv1_pre=80)
+early = lambda o: tail_db(o, 0.002, 0.05)
+check("預延遲：80 ms 時混響晚一點才出來", early(op8) < early(op0) - 15, "%.0f dB" % (early(op8) - early(op0)))
+_, ow0, sw0 = rv_run(rv1_type=4, rv1_mix=0.6, rv1_width=0.0)
+_, ow1, sw1 = rv_run(rv1_type=4, rv1_mix=0.6, rv1_width=1.0)
+check("立體寬度 0：左右一樣", np.max(np.abs(sw0)) < 1e-6)
+check("立體寬度 100：耳機左右有差別", np.sqrt(np.mean(sw1[4400:] ** 2)) > 0.1 * np.sqrt(np.mean(ow1[4400:] ** 2)))
+check("立體寬度不影響直播（單聲道）的聲音", np.max(np.abs(ow0 - ow1)) < 1e-6)
+_, ol0, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_lowcut=0)
+_, ol4, _ = rv_run(rv1_type=4, rv1_mix=0.6, rv1_lowcut=500)
+lo = lambda o: band_energy(o[4400 + SR // 10:4400 + SR // 10 + 16384], 60, 200)
+check("低頻清除：混響的低頻變少（比較不悶）", lo(ol4) < lo(ol0) * 0.2, "%.3f 倍" % (lo(ol4) / lo(ol0)))
+_, o1l, _ = rv_run(rv1_type=4, rv1_mix=0.5)
+_, o2l, _ = rv_run(rv1_type=4, rv1_mix=0.5, rv2_type=3, rv2_mix=0.5)
+check("兩層混響疊加：比一層更濃", tail_db(o2l, 0.1, 0.4) > tail_db(o1l, 0.1, 0.4) + 1.5)
+_, o_off, _ = rv_run(rv1_type=4, rv1_mix=0.0, rv2_type=3, rv2_mix=0.0)
+check("混響全部 0：完全沒有尾巴", tail_db(o_off, 0.1, 0.5) < -120)
+check("混響輸出有效", all(np.all(np.isfinite(o)) and np.max(np.abs(o)) <= 1.0 for o in (o_church, o2l, ob0, op8)))
 
 # ---------- 機器人聲：音高固定（像機器）＋環形調變
 tg = np.arange(SR * 2) / SR

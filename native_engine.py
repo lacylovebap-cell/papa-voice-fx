@@ -310,11 +310,11 @@ class Engine:
     def _rec(self, which):
         n = LIB.papa_rec_len()
         buf = np.zeros(max(n, 1), np.float32)
-        k = LIB.papa_rec_copy(0 if which == "wet" else 1, buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n)
+        k = LIB.papa_rec_copy({"wet": 0, "dry": 1, "voice": 2, "bgm": 3}[which], buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n)
         return buf[:k]
 
     def get_recording(self, which):
-        """取出最近一次錄音（處理後 'wet'／原聲 'dry'）。"""
+        """取出最近一次錄音：'wet' 直播混音／'dry' 原聲／'voice' 處理後人聲／'bgm' 伴奏。"""
         return self._rec(which).copy()
 
     def play_array(self, arr):

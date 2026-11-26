@@ -32,6 +32,7 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "humanize") t.humanize = v;
     else if (k == "sticky") t.sticky = v;
     else if (k == "predict") t.predict = v;
+    else if (k == "vibrato") t.vibrato = v;
     else if (k == "phone") p.phone = v > 0.5;
     else if (k == "phone_dist") p.phone_dist = v;
     else if (k == "machine") p.machine = v > 0.5;
@@ -39,7 +40,6 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "eq_mid") p.eq_mid = v;
     else if (k == "eq_hi") p.eq_hi = v;
     else if (k == "comp") p.comp = v;
-    else if (k == "verb") p.verb = v;
     else if (k == "card") p.card = v > 0.5;
     else if (k == "electro_fx") p.electro_fx = v;
     else if (k == "color") p.color = (int)v;
@@ -47,6 +47,7 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "metal") p.metal = v;
     else if (k == "robot_fx") p.robot_fx = v;
     else if (k == "window_ms") fx->tuner.set_window(v);
+    else if (fx->set_reverb_key(k, v)) return 1;
     else return 0;
     if (scale_changed) fx->tuner.update_scale();
     fx->apply();
@@ -54,6 +55,11 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
 }
 
 PAPA_API void papa_fx_process(void* h, float* io, int n) { ((VoiceFx*)h)->process(io, n); }
+// 上一個區塊混響的左右差（耳機立體寬度用）
+PAPA_API void papa_fx_side(void* h, float* out, int n) {
+    VoiceFx* fx = (VoiceFx*)h;
+    for (int i = 0; i < n; i++) out[i] = i < (int)fx->side.size() ? fx->side[i] : 0.f;
+}
 
 // out[0]=偵測到的頻率 out[1]=唱的音(MIDI，沒聲音時 -1) out[2]=目標音(-1) out[3]=判斷的調(-1)
 // out[4]=目前移動量(半音) out[5]=去齒音壓了幾 dB
@@ -68,8 +74,10 @@ PAPA_API void papa_fx_info(void* h, double* out) {
     out[5] = fx->deesser.reduced;
 }
 
-// 測試用：讀內部狀態
-PAPA_API void papa_fx_tap_phase(void* h, double* out) {
+// 測試用：讀變調內部狀態（讀取頭延遲、淡入中的讀取頭、接合次數）
+PAPA_API void papa_fx_shift_state(void* h, double* out) {
     VoiceFx* fx = (VoiceFx*)h;
-    out[0] = fx->tuner.tph[0]; out[1] = fx->tuner.tph[1];
+    out[0] = fx->tuner.da;
+    out[1] = fx->tuner.fading ? fx->tuner.db : -1;
+    out[2] = (double)fx->tuner.splices;
 }

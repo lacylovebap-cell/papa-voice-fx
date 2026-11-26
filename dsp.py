@@ -110,13 +110,22 @@ class Biquad:
 
 # ---------------------------------------------------------------- 電音/變調
 class Tuner:
-    """YIN 音高偵測 + 音階吸附 + 雙取樣點變調。"""
+    """YIN 音高偵測 + 音階吸附 + 變調。
+
+    變調方式（2026-11 改良）：同一時間只用「一個」讀取頭，速度 = 變調比例；
+    讀取頭快跑到邊界時，往回（或往前）跳整數個聲音週期，並用短交叉淡化接起來。
+    舊版是兩個取樣點一直疊在一起播，說話時音高一直滑動，兩份聲音對不齊，
+    會產生細微的金屬／電音感；新版只有在接合的那幾毫秒才有兩份聲音，而且已經對齊。
+    """
 
     DEC = 4
     R = 512
     PREDICT = 2.0    # 往前預測幾個區塊，補償偵測延遲（讓電音更平、更乾脆）
     CORR_LEN = 384   # 比對長度（樣本）
     SEARCH = 480     # 搜尋範圍（10 ms，涵蓋 100 Hz 以上一個週期）
+    DMIN = 3.0       # 讀取頭最少延遲（內插需要）
+    JFLOOR = 96      # 每次至少跳 2 ms
+    SHIFT_LAT = 120  # 變調平均延遲估計（樣本，約 2.5 ms，伴奏對時用）
     H = 256
 
     def __init__(self, sr=48000, window_ms=21.0):
@@ -140,21 +149,24 @@ class Tuner:
         self.allowed = [True] * 12
         self.keyt = KeyTracker()
         self.dsm = 0.0          # 平滑後的音高（自然修音用）
+        self.vc = 0.0           # 顫音的中心（更慢，約 0.25 秒）
+        self.vt = 0.0           # 自然顫音額外加的量（半音）
         self.held = None
         self.kcount = 0
         self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0,
-                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0)
+                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0, vibrato=0.0)
         self.hold_t = 0.0
         self.prev_target = None
         self.update(**{})
 
     def set_window(self, ms):
         self.W = int(self.sr * ms / 1000)
-        self.Wbase = float(self.W)
-        self.Wtarget = float(self.W)
-        self.tW = [float(self.W), float(self.W)]
-        self.tph = [0.0, 0.5]
-        self.toff = [0.0, 0.0]
+        self.X = max(192, self.W // 2)       # 接合時交叉淡化長度
+        self.da = self.DMIN + self.JFLOOR    # 目前讀取頭的延遲（樣本）
+        self.db = None                       # 淡入中的新讀取頭（接合時才有）
+        self.prog = 0
+        self.xk = 1.0
+        self.splices = 0
 
     def update(self, **kw):
         self.p.update(kw)
@@ -256,6 +268,8 @@ class Tuner:
             # 平滑音高：只追「音的中心」，不追顫音與滑音
             a = 1 - math.exp(-dt / 0.08)
             self.dsm = raw if abs(raw - self.dsm) > 1.0 else self.dsm + (raw - self.dsm) * a
+            a2 = 1 - math.exp(-dt / 0.25)
+            self.vc = raw if abs(raw - self.vc) > 1.5 else self.vc + (raw - self.vc) * a2
             cs = p["card_shift"]
             # 聲卡變音鎖定時：先升調再吸附，確保疊加後音準仍正確
             if p["mode"] == "robot":
@@ -286,17 +300,25 @@ class Tuner:
                 want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
             # Flex-Tune：只修離目標音「夠近」的音，離很遠的（刻意的表情、滑音）放過
             fl = p["flex"]
+            w = 1.0
             if fl > 0:
                 ref = self.dsm if p["mode"] == "natural" else self.det
                 dev = abs(self.target - (ref + cs))
                 thr = 0.5 - 0.4 * fl
                 w = min(1.0, max(0.0, (thr + 0.12 - dev) / 0.12))
                 want = cs + p["shift"] + (want - cs - p["shift"]) * w
+            # 自然顫音（dB）：放大／縮小你本身的顫音（0＝不變）；直接作用，不經過修正速度的平滑
+            vb = p.get("vibrato", 0.0)
+            self.vt = 0.0
+            if abs(vb) > 0.01 and p["mode"] != "robot":
+                vt = (10 ** (vb / 20) - 1) * min(1.5, max(-1.5, self.det - self.vc))
+                self.vt = vt if p["mode"] == "natural" else vt * (1 - p["strength"] * w)
             tau = p["speed"] * 0.4 + p["humanize"] * 0.3 * min(1.0, self.hold_t / 0.35)
             alpha = 1 - math.exp(-n / (self.sr * tau)) if tau > 0.0005 else 1.0
         else:
             want = p["shift"] + p["card_shift"]
             alpha = 0.15
+            self.vt = 0.0
         if not self.voiced:
             self.prev_target = None
             self.hold_t = 0.0
@@ -312,63 +334,94 @@ class Tuner:
             self.hist = np.concatenate((self.hist, x))[-self.L:]
             return x
 
-        self.Wtarget = self.Wbase
-        r = 2 ** (self.cur / 12)
+        r = 2 ** ((self.cur + self.vt) / 12)
         ext = np.concatenate((self.hist, x))
-        idx = self.L + np.arange(n)
-        ar = np.arange(n)
-        PH, WA, OF = [], [], []
-        for tap in (0, 1):
-            PH.append(self.tph[tap] + (1 - r) / self.tW[tap] * ar)
-            WA.append(np.full(n, self.tW[tap]))
-            OF.append(np.full(n, self.toff[tap]))
-        for tap in (0, 1):
-            ph = PH[tap]
-            wrap = np.nonzero((ph >= 1) | (ph < 0))[0]
-            if not len(wrap):
-                continue
-            w0 = wrap[0]
-            o = 1 - tap
-            Wn = self.Wtarget
-            p0 = 0.9999999 if r >= 1 else 0.0       # 一律從增益 0 的位置重新開始
-            # 找最佳接合點：讓新取樣點讀到的聲音和目前正在播的那段最像（避免子音被重複成「啵」）
-            od = OF[o][w0] + (PH[o][w0] % 1.0) * WA[o][w0]
-            po = idx[w0] - od                      # 另一個取樣點此刻的讀取位置
-            pn = idx[w0] - p0 * Wn                 # 新取樣點在偏移 0 時的讀取位置
-            Lc, S = self.CORR_LEN, self.SEARCH
-            ref = ext[int(po) - Lc:int(po)]
-            start = int(pn) - Lc - S
-            if start > 2 and len(ref) == Lc:
-                seg = ext[start:int(pn)]
-                c = np.correlate(seg, ref, mode="valid")[::-1]   # c[k] 對應偏移 k
-                e = np.sqrt(np.convolve(seg * seg, np.ones(Lc), mode="valid")[::-1] + 1e-12)
-                off = float(np.argmax(c / e))
-            else:
-                off = 0.0
-            ph[w0:] = p0 + (1 - r) / Wn * np.arange(n - w0)
-            WA[tap][w0:] = Wn
-            OF[tap][w0:] = off
-            self.tW[tap] = Wn
-            self.toff[tap] = off
-        s = np.zeros(n)
-        gsum = np.zeros(n)
-        for tap in (0, 1):
-            ph = PH[tap] % 1.0
-            g = 0.5 - 0.5 * np.cos(2 * np.pi * ph)
-            pos = idx - (OF[tap] + ph * WA[tap] + 3)
-            i1 = np.floor(pos).astype(np.int64)
-            t = pos - i1
-            y0, y1, y2, y3 = ext[i1 - 1], ext[i1], ext[i1 + 1], ext[i1 + 2]
-            c1 = 0.5 * (y2 - y0)
-            c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
-            c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
-            s += g * (((c3 * t + c2) * t + c1) * t + y1)
-            gsum += g
-            self.tph[tap] = float((PH[tap][-1] + (1 - r) / WA[tap][-1]) % 1.0)
+        s = self._shift(ext, n, r)
         self.hist = ext[-self.L:]
-        # 兩個取樣點長度不同時增益和不為 1，正規化避免音量起伏（會聽起來像雜訊）
-        s = s / np.maximum(gsum, 0.5)
         return x * (1 - wet) + s * wet
+
+    # ------------------------------------------------------------ 變調核心
+    def _jmin(self, r):
+        return int(max(self.JFLOOR, math.ceil(2 * self.X * abs(r - 1))))
+
+    def _read(self, ext, pos):
+        i1 = np.floor(pos).astype(np.int64)
+        t = pos - i1
+        y0, y1, y2, y3 = ext[i1 - 1], ext[i1], ext[i1 + 1], ext[i1 + 2]
+        c1 = 0.5 * (y2 - y0)
+        c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
+        c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
+        return ((c3 * t + c2) * t + c1) * t + y1
+
+    def _splice(self, ext, idx, r):
+        """找新讀取頭的位置：往回（升調）或往前（降調）跳，讓接起來的波形最像。"""
+        Lc, S = self.CORR_LEN, self.SEARCH
+        J0 = self._jmin(r)
+        src = int(math.floor(idx - self.da))
+        ref = ext[src - Lc:src]
+        if r > 1:
+            seg = ext[src - J0 - S - Lc:src - J0]
+        else:
+            seg = ext[src + J0 - Lc:src + J0 + S]
+        c = np.correlate(seg, ref, mode="valid")
+        e = np.sqrt(np.convolve(seg * seg, np.ones(Lc), mode="valid") + 1e-12)
+        c = c / (e * (math.sqrt(float(ref @ ref)) + 1e-9))
+        if r > 1:
+            c = c[::-1]                       # c[j] ↔ 跳 J0 + j
+        cm = float(np.max(c))
+        j = int(np.nonzero(c >= cm - 0.03)[0][0])   # 優先跳最短的（延遲最小）
+        while j + 1 < len(c) and c[j + 1] > c[j]:
+            j += 1
+        J = J0 + j
+        self.db = self.da + J if r > 1 else self.da - J
+        # 波形很像 → 等增益淡化；不像（氣音、子音）→ 等功率淡化，避免音量凹陷
+        self.xk = min(1.0, max(0.0, (float(c[j]) - 0.3) / 0.4))
+        self.prog = 0
+        self.splices += 1
+
+    def _shift(self, ext, n, r):
+        out = np.zeros(n)
+        L, X, D0 = self.L, self.X, self.DMIN
+        dr = r - 1.0
+        i = 0
+        while i < n:
+            if self.db is None:
+                if dr > 1e-9:
+                    thr = D0 + X * dr
+                    j = 0 if self.da <= thr else int(math.ceil((self.da - thr) / dr))
+                elif dr < -1e-9:
+                    thr = D0 + self._jmin(r) + self.SEARCH + 2
+                    j = 0 if self.da >= thr else int(math.ceil((thr - self.da) / -dr))
+                else:
+                    j = n
+                m = min(n - i, j)
+                if m > 0:
+                    k = np.arange(m)
+                    d = np.maximum(D0, self.da - dr * k)
+                    out[i:i + m] = self._read(ext, L + i + k - d)
+                    self.da = max(D0, self.da - dr * m)
+                    i += m
+                if i < n:
+                    self._splice(ext, L + i, r)
+            else:
+                m = min(n - i, X - self.prog)
+                k = np.arange(m)
+                t = (self.prog + k + 0.5) / X
+                eg = 0.5 - 0.5 * np.cos(np.pi * t)
+                q = self.xk
+                gin = q * eg + (1 - q) * np.sin(0.5 * np.pi * t)
+                gout = q * (1 - eg) + (1 - q) * np.cos(0.5 * np.pi * t)
+                da = np.maximum(D0, self.da - dr * k)
+                db = self.db - dr * k
+                pos = L + i + k
+                out[i:i + m] = gout * self._read(ext, pos - da) + gin * self._read(ext, pos - db)
+                self.prog += m
+                self.da = max(D0, self.da - dr * m)
+                self.db -= dr * m
+                i += m
+                if self.prog >= X:
+                    self.da, self.db = self.db, None
+        return out
 
 
 # ---------------------------------------------------------------- 壓縮
@@ -396,18 +449,40 @@ class Compressor:
 
 
 # ---------------------------------------------------------------- 混響
+# 混響類型：(延遲倍率, 殘響長度 0~1, 明亮度 0~1, 預延遲 ms, 立體寬度 0~1, 低頻清除 Hz)
+REVERB_TYPES = {
+    "經典": (1.00, 0.62, 1.00, 0.0, 1.0, 0.0),       # 原本的混響
+    "房間": (0.55, 0.45, 0.60, 4.0, 0.7, 150.0),
+    "人聲板": (0.80, 0.60, 0.85, 12.0, 1.0, 200.0),
+    "大廳": (1.25, 0.75, 0.55, 25.0, 1.0, 120.0),
+    "教堂": (1.55, 0.90, 0.45, 45.0, 1.0, 100.0),
+}
+REVERB_NAMES = list(REVERB_TYPES)        # 類型編號：0＝關，1 起依序對應
+REVERB_LAYERS = 3
+REVERB_FIELDS = ("type", "mix", "size", "bright", "pre", "width", "lowcut")
+
+
 class Reverb:
+    """Freeverb 式混響核心：8 條梳狀（回授裡有低通＝明亮度）＋4 條全通。spread＝右聲道多錯開的樣本數。"""
     COMB = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
     ALLP = [347, 441, 556, 701]
 
-    def __init__(self, sr=48000):
-        s = sr / 44100.0
-        self.cd = [int(d * s) for d in self.COMB]
-        self.ad = [int(d * s) for d in self.ALLP]
+    def __init__(self, sr=48000, scale=1.0, spread=0):
+        self.sr = sr
+        self.g = 0.82
+        self.damp = 0.0
+        self.spread = spread
+        self.set_scale(scale)
+
+    def set_scale(self, scale):
+        s = self.sr / 44100.0 * scale
+        self.scale = scale
+        sp = int(self.spread * self.sr / 44100.0)
+        self.cd = [int(d * s) + sp for d in self.COMB]
+        self.ad = [int(d * s) + sp for d in self.ALLP]
         self.ch = [np.zeros(d) for d in self.cd]
         self.ah = [np.zeros(d) for d in self.ad]
-        self.g = 0.82
-        self.damp = [0.0] * len(self.cd)
+        self.fl = [0.0] * len(self.cd)
         self.min_delay = min(self.cd + self.ad)
 
     def process(self, x):
@@ -420,9 +495,16 @@ class Reverb:
     def _proc(self, x):
         n = len(x)
         acc = np.zeros(n)
+        dmp = self.damp
         for i, d in enumerate(self.cd):
             prev = self.ch[i][:n]
-            y = x + self.g * prev
+            if dmp > 1e-6:
+                f, _ = lfilter([1 - dmp], [1, -dmp], prev, zi=[dmp * self.fl[i]])
+                self.fl[i] = float(f[-1])
+            else:
+                f = prev
+                self.fl[i] = float(prev[-1])
+            y = x + self.g * f
             self.ch[i] = np.concatenate((self.ch[i][n:], y))
             acc += y
         y = acc * 0.1
@@ -432,6 +514,63 @@ class Reverb:
             y = -0.5 * w + wh
             self.ah[i] = np.concatenate((self.ah[i][n:], w))
         return y
+
+
+class ReverbLayer:
+    """一層混響（像混音台上的一條 FX 通道）：類型、深度、殘響長度、明亮度、預延遲、立體寬度、低頻清除都能各自調。"""
+    WET = 1.6 * math.sqrt(2.0)
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.L = self.R = None
+        self.type = 0
+        self.mix, self.size, self.bright, self.pre_ms, self.width, self.lowcut = 0.0, 0.6, 1.0, 0.0, 1.0, 0.0
+        self.pre_buf = np.zeros(int(sr * 0.12))
+        self.pre = 0
+        self.hp = None
+        self._hp_f = 0.0
+
+    def set(self, type=None, mix=None, size=None, bright=None, pre=None, width=None, lowcut=None):
+        if type is not None and int(type) != self.type:
+            self.type = max(0, min(len(REVERB_NAMES), int(type)))
+            if self.type > 0:
+                scale = REVERB_TYPES[REVERB_NAMES[self.type - 1]][0]
+                if self.L is None:
+                    self.L, self.R = Reverb(self.sr, scale, 0), Reverb(self.sr, scale, 23)
+                else:
+                    self.L.set_scale(scale); self.R.set_scale(scale)
+                self.pre_buf[:] = 0.0
+        for k, v in (("mix", mix), ("size", size), ("bright", bright), ("pre_ms", pre), ("width", width), ("lowcut", lowcut)):
+            if v is not None:
+                setattr(self, k, float(v))
+        cl = lambda v: min(1.0, max(0.0, v))
+        if self.L is not None:
+            for rv in (self.L, self.R):
+                rv.g = 0.75 + 0.22 * cl(self.size)
+                rv.damp = (1.0 - cl(self.bright)) * 0.7
+        self.pre = int(min(100.0, max(0.0, self.pre_ms)) * self.sr / 1000)
+        f = min(800.0, max(0.0, self.lowcut))
+        if f != self._hp_f:
+            self._hp_f = f
+            self.hp = Biquad("hp", f, self.sr, q=0.707) if f >= 20 else None
+
+    @property
+    def active(self):
+        return self.type > 0 and self.mix > 0.001
+
+    def process(self, y):
+        """回傳 (中間, 兩側)：中間加到人聲（直播只聽得到這個），兩側只在耳機做出左右寬度。"""
+        x = y
+        if self.hp is not None:
+            x = self.hp(x)
+        if self.pre > 0:
+            P = len(self.pre_buf)
+            ext = np.concatenate((self.pre_buf, x))
+            self.pre_buf = ext[-P:]
+            x = ext[P - self.pre:P - self.pre + len(x)]
+        l, r = self.L.process(x), self.R.process(x)
+        k = self.mix * self.WET
+        return (l + r) * (0.5 * k), (l - r) * (0.5 * k * min(1.0, max(0.0, self.width)))
 
 
 # ---------------------------------------------------------------- 電音質感
@@ -491,7 +630,8 @@ VOICE_COLORS = {
 
 # ---------------------------------------------------------------- 金屬共鳴（更電的機械感）
 class MetalComb:
-    """跟著目前的目標音調整的回授梳狀濾波器：只放大「準確音高」的泛音，聲音變得更像電子合成、更電。"""
+    """跟著目前的目標音調整的回授梳狀濾波器：只放大「準確音高」的泛音，聲音變得更像電子合成、更電。
+    共鳴強度與延遲長度都是逐點慢慢變（約 8 ms／6 ms），開關或換音時不會「啵」。"""
 
     def __init__(self, sr):
         self.sr = sr
@@ -499,33 +639,38 @@ class MetalComb:
         self.buf = np.zeros(self.L)
         self.w = 0
         self.D = 200.0
+        self.Dt = 200.0
+        self.g = 0.0
+        self.kg = 1 - math.exp(-1.0 / (0.008 * sr))
+        self.kd = 1 - math.exp(-1.0 / (0.006 * sr))
 
     def process(self, x, amt, midi):
-        if amt <= 0.001:
+        if amt <= 0.001 and self.g < 1e-4:
             # 保持狀態連續
             idx = (self.w + np.arange(len(x))) % self.L
             self.buf[idx] = x
             self.w = (self.w + len(x)) % self.L
+            self.g = 0.0
             return x
         if midi is not None:
             f = 440.0 * 2 ** ((midi - 69) / 12)
-            D = min(self.L - 2, max(20.0, self.sr / f))
-            self.D += (D - self.D) * 0.5
-        # 有唱音時才共鳴；一停下來立刻收掉，不留尾音（不會像回音／混響）
-        g = (0.35 + 0.35 * amt) if midi is not None else 0.0
+            self.Dt = min(self.L - 2, max(20.0, self.sr / f))
+        # 有唱音時才共鳴；一停下來很快收掉（約 20 ms），不留尾音（不會像回音／混響）
+        gt = (0.35 + 0.35 * amt) if (midi is not None and amt > 0.001) else 0.0
         out = np.empty(len(x))
-        D = self.D
-        i0 = int(np.floor(D)); fr = D - i0
         buf, L, w = self.buf, self.L, self.w
+        g, D, kg, kd, Dt = self.g, self.D, self.kg, self.kd, self.Dt
         for i in range(len(x)):
+            g += (gt - g) * kg
+            D += (Dt - D) * kd
+            i0 = int(D); fr = D - i0
             a = buf[(w - i0) % L]; b = buf[(w - i0 - 1) % L]
             y = x[i] + g * (a * (1 - fr) + b * fr)
             buf[w] = y
-            out[i] = y
+            out[i] = y * (1 - g)           # 補償回授造成的音量增加
             w = (w + 1) % L
-        self.w = w
-        y = out * (1 - g)                 # 補償回授造成的音量增加
-        return x * (1 - amt) + y * amt
+        self.w, self.g, self.D = w, g, D
+        return x * (1 - amt) + out * amt
 
 
 # ---------------------------------------------------------------- 去齒音
@@ -624,12 +769,22 @@ class VoiceFx:
         self.ring_ph = 0.0
         self.color_eq = []
         self._color = None
-        self.verb = Reverb(sr)
+        # 混響：最多 3 層，各自獨立（跟效果無關，切換效果不會改變）
+        self.layers = [ReverbLayer(sr) for _ in range(REVERB_LAYERS)]
+        self.side = np.zeros(0, np.float32)
         self.info = (0.0, None, None)
         self.set()
 
     def set(self, **kw):
-        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict"}
+        # 舊的單一「混響」拉桿：對應到第 1 層「經典」（和以前的聲音完全一樣）
+        if "verb" in kw:
+            v = float(kw["verb"])
+            self.layers[0].set(type=1, mix=v, size=(0.05 + 0.13 * v) / 0.22, bright=1.0, pre=0.0, width=1.0, lowcut=0.0)
+        for i, L in enumerate(self.layers):
+            lk = {f: kw["rv%d_%s" % (i + 1, f)] for f in REVERB_FIELDS if "rv%d_%s" % (i + 1, f) in kw}
+            if lk:
+                L.set(**lk)
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict", "vibrato"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
         if "card" in kw:
             tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0
@@ -718,12 +873,14 @@ class VoiceFx:
             y = f(y)
         y = self.deesser.process(y, float(self.p["deess"]))
         y = self.comp.process(y)
-        v = float(self.p["verb"])
-        # 混響：拉越大，殘響越長（回授 0.80→0.93）、越濕（0→1.6 倍）
-        self.verb.g = 0.80 + 0.13 * v
-        if v > 0.001:
-            y = y + self.verb.process(y) * (v * 1.6)
-        else:
-            self.verb.process(y)  # 保持尾巴狀態連續
+        # 混響（每一層各自加上去；兩側成分另外給耳機做立體寬度）
+        dry = y
+        side = np.zeros(len(y))
+        for L in self.layers:
+            if L.active:
+                m, sd = L.process(dry)
+                y = y + m
+                side = side + sd
+        self.side = side[:n0].astype(np.float32)
         y = np.clip(y, -1.0, 1.0)
         return y[:n0].astype(np.float32)
