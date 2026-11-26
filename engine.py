@@ -216,6 +216,7 @@ class Engine:
         self.out_target = 512          # 輸出緩衝目標（樣本）
         self.bgm_comp = 0              # 伴奏延後量（樣本），讓直播裡伴奏和人聲對齊
         self.bgm_trim_ms = 0.0         # 使用者微調
+        self.duck_db = 0.0             # 伴奏避讓目前壓低的量
         self.bgm_fifo = np.zeros(0)
         self.level = 0.0
         self.lv = dict(inp=0.0, mon=0.0, out=0.0, bgm=0.0)   # 各管道音量（給畫面的跳動波形用）
@@ -337,6 +338,18 @@ class Engine:
                 self.lv["bgm"] = float(np.max(np.abs(bg))) if len(bg) else 0.0
             else:
                 bg_mix = bg_mon = 0.0
+            # 伴奏避讓：依人聲大小把伴奏壓低一點
+            duck = float(self.params.get("duck", 0.0))
+            if self.bgm_ring is not None and (duck > 0.001 or abs(self.duck_db) > 1e-4):
+                vdb = 20 * np.log10(np.sqrt(np.mean(y * y)) + 1e-9)
+                k = min(1.0, max(0.0, (vdb + 45.0) / 20.0))
+                want = -6.0 * duck * k
+                tau = 0.02 if want < self.duck_db else 0.3
+                nw = self.duck_db + (want - self.duck_db) * (1 - np.exp(-len(y) / (SR * tau)))
+                g = 10 ** ((self.duck_db + (nw - self.duck_db) * np.arange(1, len(y) + 1) / len(y)) / 20)
+                self.duck_db = float(nw)
+                bg_mix = bg_mix * g
+                bg_mon = bg_mon * g
             out_mix = self.lim_out.process(y * self.gains["out"] + bg_mix)
             if self.recording and self.rec_samples < self.rec_max:
                 self.rec_wet.append(out_mix.astype(np.float32))

@@ -126,7 +126,7 @@ class Tuner:
     DMIN = 3.0       # 讀取頭最少延遲（內插需要）
     JFLOOR = 96      # 每次至少跳 2 ms
     SHIFT_LAT = 120  # 變調平均延遲估計（樣本，約 2.5 ms，伴奏對時用）
-    LOOKAHEAD = 360  # 壓平音高的模式（電音、機器人）多等 7.5 ms，讓音高判斷跟上（說話、自然修音不用等）
+    LOOKAHEAD = 0    # 不額外等待（怕怕要求：任何功能都不能增加延遲）
     H = 256
 
     def __init__(self, sr=48000, window_ms=21.0):
@@ -460,6 +460,8 @@ REVERB_TYPES = {
     "人聲板": (0.80, 0.60, 0.85, 12.0, 1.0, 200.0),
     "大廳": (1.25, 0.75, 0.55, 25.0, 1.0, 120.0),
     "教堂": (1.55, 0.90, 0.45, 45.0, 1.0, 100.0),
+    # CD 絲滑板式：參考 Valhalla VintageVerb「Smooth Plate／1970s」— 偏暗、柔順、預延遲 25 ms、約 2 秒
+    "CD 絲滑板式": (0.85, 0.72, 0.30, 25.0, 1.0, 0.0),
 }
 REVERB_NAMES = list(REVERB_TYPES)        # 類型編號：0＝關，1 起依序對應
 REVERB_LAYERS = 3
@@ -533,6 +535,8 @@ class ReverbLayer:
         self.pre = 0
         self.hp = None
         self._hp_f = 0.0
+        self.lp = None              # 高頻柔化（明亮度越低，尾巴越暗、越柔）
+        self._lp_f = 0.0
 
     def set(self, type=None, mix=None, size=None, bright=None, pre=None, width=None, lowcut=None):
         if type is not None and int(type) != self.type:
@@ -557,6 +561,11 @@ class ReverbLayer:
         if f != self._hp_f:
             self._hp_f = f
             self.hp = Biquad("hp", f, self.sr, q=0.707) if f >= 20 else None
+        b = min(1.0, max(0.0, self.bright))
+        fl = 3000.0 + 15000.0 * b * b
+        if fl != self._lp_f:
+            self._lp_f = fl
+            self.lp = [Biquad("lp", fl, self.sr, q=0.707), Biquad("lp", fl, self.sr, q=0.707)] if fl < 17500 else None
 
     @property
     def active(self):
@@ -573,8 +582,79 @@ class ReverbLayer:
             self.pre_buf = ext[-P:]
             x = ext[P - self.pre:P - self.pre + len(x)]
         l, r = self.L.process(x), self.R.process(x)
+        if self.lp is not None:
+            l, r = self.lp[0](l), self.lp[1](r)
         k = self.mix * self.WET
         return (l + r) * (0.5 * k), (l - r) * (0.5 * k * min(1.0, max(0.0, self.width)))
+
+
+# ---------------------------------------------------------------- 人聲質感（CD 質感）
+class Doubler:
+    """人聲加寬：四個稍微延遲、音高微微飄動的副本，左右分開（像 Doubler 外掛）。
+    回傳 (中間, 兩側)：中間＝厚度（直播也聽得到），兩側＝立體寬度（只有耳機聽得出來）。"""
+    VOICES = ((9.4, 0.25, 0.31, -1.0), (16.0, 0.30, 0.23, 1.0), (23.7, 0.35, 0.37, -0.8), (21.0, 0.28, 0.27, 0.8))
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.L = 1 << 13
+        self.buf = np.zeros(self.L)
+        self.w = 0
+        self.t = 0
+
+    def process(self, y, thick, widen):
+        n = len(y)
+        L = self.L
+        self.buf[(self.w + np.arange(n)) % L] = y
+        tt = (self.t + np.arange(n)) / self.sr
+        mid = np.zeros(n); side = np.zeros(n)
+        for base, depth, rate, pan in self.VOICES:
+            d = (base + depth * np.sin(2 * np.pi * rate * tt + base)) * self.sr / 1000.0
+            pos = (self.w + np.arange(n)) - d
+            i0 = np.floor(pos).astype(np.int64)
+            fr = pos - i0
+            v = self.buf[i0 % L] * (1 - fr) + self.buf[(i0 + 1) % L] * fr
+            mid += v
+            side += v * pan
+        self.w = (self.w + n) % L
+        self.t += n
+        g = 0.18
+        return mid * (g * thick), side * (g * widen)
+
+
+class Leveler:
+    """響度：自動把人聲穩定在好聽的大小（小聲拉上來、大聲壓住），再用柔和的限制器收頂。
+    沒聲音的時候不會亂放大底噪。"""
+
+    def __init__(self, sr):
+        self.sr = sr
+        self.gdb = 0.0
+
+    def process(self, y, amt):
+        n = len(y)
+        if amt <= 0.001:
+            self.gdb *= 0.9
+            if abs(self.gdb) < 0.01:
+                return y
+        rms = math.sqrt(float(np.mean(y * y)) + 1e-12)
+        lvl = 20 * math.log10(rms)
+        target = -20.0 + 4.0 * amt                 # 響度越大，目標越大聲
+        if lvl < -48.0 or amt <= 0.001:            # 沒聲音：慢慢回到 0 dB，不放大底噪
+            want = 0.0 if amt > 0.001 else 0.0
+            tau = 0.8
+        else:
+            want = max(-9.0, min(12.0, target - lvl)) * amt
+            tau = 0.12 if want < self.gdb else 0.9   # 壓下來快、拉上去慢
+        dt = n / self.sr
+        new = self.gdb + (want - self.gdb) * (1 - math.exp(-dt / tau))
+        g = 10 ** ((self.gdb + (new - self.gdb) * np.arange(1, n + 1) / n) / 20)
+        self.gdb = new
+        z = y * g
+        # 柔和收頂（0.7 以上才開始壓，最大不超過 0.98）
+        a = np.abs(z)
+        over = a > 0.7
+        if np.any(over):
+            z = np.where(over, np.sign(z) * (0.7 + 0.28 * np.tanh((a - 0.7) / 0.28)), z)
+        return z
 
 
 # ---------------------------------------------------------------- 電音質感
@@ -752,6 +832,7 @@ class VoiceFx:
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
             eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0, robot_fx=0.0,
+            loud=0.0, clarity=0.0, thick=0.0, widen=0.0,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -776,6 +857,11 @@ class VoiceFx:
         # 混響：最多 3 層，各自獨立（跟效果無關，切換效果不會改變）
         self.layers = [ReverbLayer(sr) for _ in range(REVERB_LAYERS)]
         self.side = np.zeros(0, np.float32)
+        # 人聲質感（全部效果共用，預設關閉）
+        self.clar = [Biquad("peaking", 250, sr, 0.0, q=1.0), Biquad("peaking", 5000, sr, 0.0, q=1.0),
+                     Biquad("highshelf", 9000, sr, 0.0)]
+        self.doubler = Doubler(sr)
+        self.leveler = Leveler(sr)
         self.info = (0.0, None, None)
         self.set()
 
@@ -801,6 +887,10 @@ class VoiceFx:
             self._color = self.p["color"]
             self.color_eq = [Biquad("peaking", min(f, self.sr * 0.45), self.sr, g, q=q)
                              for f, g, q in VOICE_COLORS.get(self._color, [])]
+        c = float(self.p["clarity"])
+        self.clar[0].set_gain(-3.0 * c)     # 去悶
+        self.clar[1].set_gain(2.5 * c)      # 清楚
+        self.clar[2].set_gain(5.0 * c)      # 空氣感
         self.eq[0].set_gain(self.p["eq_lo"])
         self.eq[1].set_gain(self.p["eq_mid"])
         self.eq[2].set_gain(self.p["eq_hi"])
@@ -875,11 +965,22 @@ class VoiceFx:
             y = f(y)
         for f in self.eq:
             y = f(y)
+        for f in self.clar:
+            y = f(y)
         y = self.deesser.process(y, float(self.p["deess"]))
         y = self.comp.process(y)
+        y = self.leveler.process(y, float(self.p["loud"]))
+        # 人聲加寬／厚度
+        side = np.zeros(len(y))
+        th, wd = float(self.p["thick"]), float(self.p["widen"])
+        if th > 0.001 or wd > 0.001:
+            dm, ds = self.doubler.process(y, th, wd)
+            y = y + dm
+            side = side + ds
+        else:
+            self.doubler.process(y, 0.0, 0.0)
         # 混響（每一層各自加上去；兩側成分另外給耳機做立體寬度）
         dry = y
-        side = np.zeros(len(y))
         for L in self.layers:
             if L.active:
                 m, sd = L.process(dry)

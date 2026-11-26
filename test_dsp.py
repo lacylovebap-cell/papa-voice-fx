@@ -452,6 +452,66 @@ _, o_off, _ = rv_run(rv1_type=4, rv1_mix=0.0, rv2_type=3, rv2_mix=0.0)
 check("混響全部 0：完全沒有尾巴", tail_db(o_off, 0.1, 0.5) < -120)
 check("混響輸出有效", all(np.all(np.isfinite(o)) and np.max(np.abs(o)) <= 1.0 for o in (o_church, o2l, ob0, op8)))
 
+# ---------- CD 質感：新混響類型、加寬、厚度、響度、清晰度
+_, o_cls, _ = rv_run(rv1_type=1, rv1_mix=0.6)
+from dsp import REVERB_TYPES as _RT, REVERB_NAMES as _RN
+_sc, _sz, _br, _pr, _wd, _lc = _RT["CD 絲滑板式"]
+_, o_cd, _ = rv_run(rv1_type=_RN.index("CD 絲滑板式") + 1, rv1_mix=0.6, rv1_size=_sz, rv1_bright=_br, rv1_pre=_pr, rv1_width=_wd, rv1_lowcut=_lc)
+check("CD 絲滑板式：尾巴比經典暗很多（柔順）", hl(o_cd) < hl(o_cls) * 0.2, "%.3f 倍" % (hl(o_cd) / hl(o_cls)))
+check("CD 絲滑板式：殘響夠長（約 2 秒，0.8 秒後還在）", tail_db(o_cd, 0.8, 1.0) > tail_db(o_cd, 0.0, 0.1) - 40)
+def polish(sig, sec=3.0, **kw):
+    fx = VoiceFx(SR); fx.set(comp=0.0, verb=0.0, **kw)
+    xx = sig(np.arange(int(SR * sec)) / SR).astype(np.float32)
+    outs, sides = [], []
+    for s0 in range(0, len(xx) // 256 * 256, 256):
+        outs.append(fx.process(xx[s0:s0 + 256])); sides.append(np.array(fx.side[:256]))
+    return xx, np.concatenate(outs).astype(np.float64), np.concatenate(sides).astype(np.float64)
+_, ow0, sw0 = polish(rich(220), widen=0.0)
+_, ow1, sw1 = polish(rich(220), widen=1.0)
+check("人聲加寬：耳機左右有寬度", np.sqrt(np.mean(sw1[SR:] ** 2)) > 0.05 * np.sqrt(np.mean(ow1[SR:] ** 2)))
+check("人聲加寬：不影響直播（單聲道）的聲音", np.max(np.abs(ow0 - ow1)) < 1e-6)
+_, ot1, _ = polish(rich(220), thick=1.0)
+check("厚度：直播也聽得到、輸出有效", np.max(np.abs(ot1 - ow0)) > 0.01 and np.all(np.isfinite(ot1)) and np.max(np.abs(ot1)) <= 1.0)
+quiet = lambda t: 0.018 * np.sin(2 * np.pi * 220 * t) + 0.008 * np.sin(4 * np.pi * 220 * t)
+_, oq0, _ = polish(quiet, loud=0.0)
+_, oq1, _ = polish(quiet, loud=1.0)
+rms_db = lambda o: 20 * np.log10(np.sqrt(np.mean(o[2 * SR:] ** 2)) + 1e-12)
+check("響度：小聲的人聲會被拉上來", rms_db(oq1) - rms_db(oq0) > 8, "%+.1f dB" % (rms_db(oq1) - rms_db(oq0)))
+loudsig = lambda t: 0.6 * np.sin(2 * np.pi * 220 * t) + 0.3 * np.sin(4 * np.pi * 220 * t)
+_, ol1, _ = polish(loudsig, loud=1.0)
+check("響度：很大聲的會被壓住、不會破音", np.max(np.abs(ol1[SR:])) < 0.99 and rms_db(ol1) < rms_db(polish(loudsig, loud=0.0)[1]) - 2)
+hiss = lambda t: 0.0003 * np.sin(2 * np.pi * 3000 * t)
+_, on0, _ = polish(hiss, loud=0.0)
+_, on1, _ = polish(hiss, loud=1.0)
+check("響度：沒唱歌時不會把底噪放大", rms_db(on1) - rms_db(on0) < 1.0, "%+.1f dB" % (rms_db(on1) - rms_db(on0)))
+def gain_at(f, **kw):
+    fx0 = VoiceFx(SR); fx0.set(comp=0.0, verb=0.0)
+    fx1 = VoiceFx(SR); fx1.set(comp=0.0, verb=0.0, **kw)
+    t = np.arange(SR) / SR; xx = (0.1 * np.sin(2 * np.pi * f * t)).astype(np.float32)
+    o0 = np.concatenate([fx0.process(xx[s0:s0 + 256]) for s0 in range(0, len(xx) // 256 * 256, 256)])
+    o1 = np.concatenate([fx1.process(xx[s0:s0 + 256]) for s0 in range(0, len(xx) // 256 * 256, 256)])
+    return 20 * np.log10(np.sqrt(np.mean(o1[SR // 2:] ** 2)) / np.sqrt(np.mean(o0[SR // 2:] ** 2)))
+check("清晰度：空氣感（10 kHz 提升）", gain_at(10000, clarity=1.0) > 3, "%.1f dB" % gain_at(10000, clarity=1.0))
+check("清晰度：去悶（250 Hz 降低）", gain_at(250, clarity=1.0) < -2, "%.1f dB" % gain_at(250, clarity=1.0))
+check("清晰度 0：完全不影響", abs(gain_at(3000, clarity=0.0)) < 0.05)
+
+# ---------- 延遲守門：任何功能都不能讓人聲變慢
+def onset_ms(**kw):
+    fx = VoiceFx(SR, low_latency=True); fx.tuner.set_window(15.0); fx.set(comp=0.0, verb=0.0, **kw)
+    t = np.arange(SR) / SR
+    xx = np.zeros(SR, np.float32)
+    seg = slice(SR // 2, SR // 2 + 4800)
+    xx[seg] = (0.4 * np.sin(2 * np.pi * 220 * t[:4800]) + 0.2 * np.sin(4 * np.pi * 220 * t[:4800])).astype(np.float32)
+    o = np.concatenate([fx.process(xx[s0:s0 + 128]) for s0 in range(0, SR // 128 * 128, 128)]).astype(np.float64)
+    env = np.abs(o)
+    first = int(np.nonzero(env[SR // 2 - 2000:] > 0.1 * env.max())[0][0]) + SR // 2 - 2000
+    return (first - SR // 2) / SR * 1000
+polish_all = dict(loud=1.0, clarity=1.0, thick=1.0, widen=1.0, rv1_type=6, rv1_mix=0.5, rv1_pre=50, rv2_type=4, rv2_mix=0.5, deess=0.5)
+check("人聲質感、混響、加寬全開：人聲本身完全不延遲", onset_ms(**polish_all) < 0.5, "%.2f ms" % onset_ms(**polish_all))
+check("說話模式＋變聲：延遲 < 5 ms", onset_ms(card=True) < 5.0, "%.1f ms" % onset_ms(card=True))
+check("電音＋變聲＋全部質感：延遲 < 5 ms", onset_ms(card=True, mode="electro", **polish_all) < 5.0,
+      "%.1f ms" % onset_ms(card=True, mode="electro", **polish_all))
+
 # ---------- 機器人聲：音高固定（像機器）＋環形調變
 tg = np.arange(SR * 2) / SR
 fg = 200 * 2 ** (np.linspace(0, 4, len(tg)) / 12)          # 一直往上滑 4 個半音

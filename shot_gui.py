@@ -24,6 +24,7 @@ a.current_scene = "怕怕專屬一"
 a.refresh_scene_bar()
 a.preset("electro")
 a.rv[1]["type"].set("大廳"); a.on_reverb_type(1)
+a.alpha.set(100); a.apply()
 
 
 def shot(name):
@@ -50,5 +51,5 @@ shot("1_simple")
 a.canvas.yview_moveto(1.0); shot("2_simple_bottom")
 a.open_mixer("fx"); shot("3_mixer_electro")
 a.open_mixer("rv", 1); shot("4_mixer_reverb")
-a.open_mixer("align"); shot("5_mixer_align")
+a.open_mixer("polish"); shot("5_mixer_polish")
 a.on_close()

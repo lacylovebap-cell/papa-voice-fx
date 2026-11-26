@@ -102,6 +102,7 @@ struct Engine {
     double g_inp = 1, g_mon = 1, g_dry = 0, g_out = 1, g_bgm = 0.8;
     bool bgm_on = true;
     double bgm_trim_ms = 0;
+    double duck = 0, duck_db = 0;   // 伴奏避讓：唱歌時伴奏自動讓開（最多 6 dB）
     double test_tone_hz = 0, test_tone_ph = 0;   // 測試用：用合成音代替麥克風
 
     Ring cable_ring{1 << 16};
@@ -177,6 +178,7 @@ struct Engine {
         else if (k == "g_bgm") g_bgm = v;
         else if (k == "bgm_on") bgm_on = v > 0.5;
         else if (k == "bgm_trim_ms") bgm_trim_ms = v;
+        else if (k == "duck") duck = v;
         else if (k == "test_tone_hz") test_tone_hz = v;
         else if (fx) {
             TunerParams& t = fx->tuner.p;
@@ -207,6 +209,10 @@ struct Engine {
             else if (k == "deess") p.deess = v;
             else if (k == "metal") p.metal = v;
             else if (k == "robot_fx") p.robot_fx = v;
+            else if (k == "loud") p.loud = v;
+            else if (k == "clarity") p.clarity = v;
+            else if (k == "thick") p.thick = v;
+            else if (k == "widen") p.widen = v;
             else if (fx->set_reverb_key(k, v)) return;
             if (sc) fx->tuner.update_scale();
             fx->apply();
@@ -275,6 +281,24 @@ struct Engine {
         std::memmove(F.data(), F.data() + frames, sizeof(double) * (bgm_fifo_len - frames));
         bgm_fifo_len -= frames;
 
+        // 伴奏避讓：依人聲大小把伴奏壓低一點（直播和耳機用同一個量，兩邊都對齊）
+        {
+            double ev = 0;
+            for (int i = 0; i < frames; i++) ev += tmp_y[i] * tmp_y[i];
+            double vdb = 20 * std::log10(std::sqrt(ev / std::max(1, frames)) + 1e-9);
+            double k = std::min(1.0, std::max(0.0, (vdb + 45.0) / 20.0));
+            double want = -6.0 * duck * k;
+            double tau = want < duck_db ? 0.02 : 0.3;
+            double nw = duck_db + (want - duck_db) * (1 - std::exp(-frames / (SR * tau)));
+            if (std::fabs(nw) > 1e-4 || std::fabs(duck_db) > 1e-4) {
+                for (int i = 0; i < frames; i++) {
+                    double g = std::pow(10.0, (duck_db + (nw - duck_db) * (i + 1) / frames) / 20);
+                    bg_mix[i] *= g;
+                    tmp_bg[i] = (float)(tmp_bg[i] * g);
+                }
+            }
+            duck_db = nw;
+        }
         // 直播輸出
         double* om = d_om.data();
         for (int i = 0; i < frames; i++) om[i] = tmp_y[i] * g_out + bg_mix[i];

@@ -98,6 +98,10 @@ EDIT_KEYS = {
     "robot": ["robot_note", "robot_fx", "metal", "comp", "eq_lo", "eq_mid", "eq_hi"],
 }
 RV_FIELDS = ("type", "mix", "size", "bright", "pre", "width", "lowcut")
+# 人聲質感（CD 質感）：全部效果共用，預設關閉
+POLISH = ("loud", "clarity", "thick", "widen", "duck")
+POLISH_NAMES = {"loud": "響度", "clarity": "清晰度", "thick": "厚度", "widen": "加寬（耳機）", "duck": "伴奏避讓"}
+CD_TEMPLATE = dict(loud=50, clarity=40, thick=25, widen=60, duck=30)
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
 
@@ -114,10 +118,15 @@ BGM_HELP = """伴奏怎麼接（只要設定一次）：
 之後只要開調音台、在 Chrome 播歌就好，不用再設定。
 伴奏不會被變音，會跟你的人聲一起送到耳機和直播。"""
 
-C_BG, C_CARD, C_TXT, C_SUB = "#16131f", "#221e30", "#ece9f7", "#9a94b8"
-C_PINK, C_GREEN, C_YELLOW, C_CYAN = "#ff7eb6", "#7dffb0", "#ffd84d", "#6fe3ff"
-C_BTN = "#2e2944"
-FONT = "Microsoft JhengHei"
+# 配色：Studio One 風格的石墨灰＋藍色重點色
+C_BG, C_CARD, C_TXT, C_SUB = "#1b1e22", "#262a2f", "#e6e9ed", "#8e959d"
+C_PINK, C_GREEN, C_YELLOW, C_CYAN = "#f06c9b", "#5fd38d", "#f2c14e", "#4fc3f7"
+C_BTN = "#363b42"
+C_ACCENT = "#3ba4e0"      # Studio One 藍
+C_DEEP = "#15181b"        # 最深的底（波形、清單）
+C_LINE = "#3a3f46"        # 邊框
+C_DARKTXT = "#0d1013"
+FONT = "Microsoft JhengHei UI"
 
 
 def data_dir():
@@ -156,12 +165,12 @@ class Wave(tk.Canvas):
     """會跳動的聲音波形：最近約 3 秒的音量。整條用一條線畫，很省電腦資源（不會搶走處理聲音的時間）。"""
 
     def __init__(self, parent, color, w=210, h=34):
-        super().__init__(parent, width=w, height=h, bg="#0e0c16", highlightthickness=0)
+        super().__init__(parent, width=w, height=h, bg=C_DEEP, highlightthickness=0)
         self.w, self.h, self.color = w, h, color
         self.n = w // 3
         self.hist = collections.deque([0.0] * self.n, maxlen=self.n)
         mid = h / 2
-        self.base = self.create_line(0, mid, w, mid, fill="#3a3550")
+        self.base = self.create_line(0, mid, w, mid, fill=C_LINE)
         self.line = self.create_line(*self._points(), fill=color, width=2)
 
     def _points(self):
@@ -244,6 +253,7 @@ class App:
         if self.personal.get():
             self.card.set(1)
         self.ultra = self.var("ultra_v2", 0, tk.IntVar)
+        self.alpha = self.var("alpha", 97, D)       # 視窗透明度（微透明）
         self.block_now = 128 if NATIVE else 256
         self._ur_hist = []
         self.bgm_trim = self.var("bgm_trim", 0, D)
@@ -267,6 +277,7 @@ class App:
                 r[k] = self.var("rv%d_%s" % (i + 1, k), d[k], D)
             self.rv.append(r)
         self.reverb_names = list(REVERB_NAMES)
+        self.polish = {k: self.var("pol_" + k, 0, D) for k in POLISH}
         self.deess = self.var("deess", 40, D)
         self.g_dry = self.var("g_dry", 0, D)
         self.el_style = self.var("el_style3", "電音")
@@ -301,8 +312,10 @@ class App:
         return tk.Label(parent, text=text, bg=parent["bg"], fg=color, font=(FONT, size, "bold" if bold else "normal"), **kw)
 
     def button(self, parent, text, cmd, color=C_BTN, fg=C_TXT, size=11, **kw):
-        return tk.Button(parent, text=text, command=cmd, bg=color, fg=fg, activebackground=color, activeforeground=fg,
-                         relief="flat", font=(FONT, size, "bold"), cursor="hand2", bd=0, padx=10, pady=6, **kw)
+        b = tk.Button(parent, text=text, command=cmd, bg=color, fg=fg, activebackground=color, activeforeground=fg,
+                      relief="flat", font=(FONT, size, "bold"), cursor="hand2", bd=0, padx=10, pady=6,
+                      highlightthickness=1, highlightbackground=C_LINE, highlightcolor=C_LINE, **kw)
+        return b
 
     def _build(self):
         st = ttk.Style()
@@ -310,11 +323,35 @@ class App:
             st.theme_use("clam")
         except Exception:
             pass
-        st.configure("TNotebook", background=C_BG, borderwidth=0)
-        st.configure("TNotebook.Tab", background="#2e2944", foreground=C_TXT, padding=(16, 5), font=(FONT, 11, "bold"))
-        st.map("TNotebook.Tab", background=[("selected", C_PINK)], foreground=[("selected", "#2a0a1a")])
+        # ---- 深色主題（分頁、拉桿、下拉選單、捲軸都改成石墨灰）
+        st.configure(".", background=C_BG, foreground=C_TXT, bordercolor=C_LINE, lightcolor=C_CARD, darkcolor=C_DEEP,
+                     troughcolor=C_DEEP, focuscolor=C_ACCENT, font=(FONT, 10))
+        st.configure("TNotebook", background=C_DEEP, borderwidth=0, tabmargins=(8, 6, 8, 0))
+        st.configure("TNotebook.Tab", background=C_CARD, foreground=C_SUB, padding=(18, 6), font=(FONT, 11, "bold"),
+                     bordercolor=C_LINE, lightcolor=C_CARD)
+        st.map("TNotebook.Tab", background=[("selected", C_BG)], foreground=[("selected", C_ACCENT)],
+               lightcolor=[("selected", C_ACCENT)])
+        for orient in ("Horizontal", "Vertical"):
+            st.configure(orient + ".TScale", background="#5d646d", troughcolor=C_DEEP, bordercolor="#101215",
+                         lightcolor="#7b838d", darkcolor="#3d434a", sliderthickness=14)
+            st.map(orient + ".TScale", background=[("active", "#8a939d")])
+        st.configure("TCombobox", fieldbackground=C_DEEP, background=C_BTN, foreground=C_TXT, arrowcolor=C_TXT,
+                     bordercolor=C_LINE, lightcolor=C_LINE, darkcolor=C_LINE, selectbackground=C_DEEP, selectforeground=C_TXT)
+        st.map("TCombobox", fieldbackground=[("readonly", C_DEEP), ("disabled", C_CARD)],
+               foreground=[("disabled", "#5d646d")], background=[("active", "#454b53")])
+        self.root.option_add("*TCombobox*Listbox.background", C_CARD)
+        self.root.option_add("*TCombobox*Listbox.foreground", C_TXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", C_ACCENT)
+        self.root.option_add("*TCombobox*Listbox.font", (FONT, 10))
+        st.configure("Vertical.TScrollbar", background=C_BTN, troughcolor=C_DEEP, arrowcolor=C_SUB, bordercolor=C_DEEP,
+                     lightcolor=C_BTN, darkcolor=C_BTN)
+        # 微透明（進階設定可以調）
+        try:
+            self.root.attributes("-alpha", max(0.7, min(1.0, float(self.alpha.get()) / 100)))
+        except Exception:
+            pass
         # ---- 最上面：我的設定（自己取名字的存檔，一鍵切換）
-        self.scene_bar = tk.Frame(self.root, bg="#0e0c16", padx=10, pady=6)
+        self.scene_bar = tk.Frame(self.root, bg=C_DEEP, padx=10, pady=6)
         self.scene_bar.pack(fill="x")
         # ---- 兩頁：簡單／混音台
         self.nb = ttk.Notebook(self.root)
@@ -343,7 +380,7 @@ class App:
         # ---- 頂部：開始＋聲卡變音
         top = tk.Frame(wrap, bg=C_BG)
         top.pack(fill="x")
-        self.btn_start = self.button(top, "▶ 開始", self.toggle, color=C_PINK, fg="#2a0a1a", size=16, width=8)
+        self.btn_start = self.button(top, "▶ 開始", self.toggle, color=C_ACCENT, fg="white", size=16, width=8)
         self.btn_start.pack(side="left")
         self.btn_card = self.button(top, "", self.toggle_card, size=13)
         self.btn_card.pack(side="left", padx=10, fill="x", expand=True)
@@ -351,9 +388,9 @@ class App:
         self.msg.pack(fill="x", pady=(6, 6))
 
         # ---- 狀態面板：一眼看懂現在的聲音
-        sp = tk.Frame(wrap, bg="#0e0c16", padx=14, pady=10, highlightthickness=1, highlightbackground="#3a3550")
+        sp = tk.Frame(wrap, bg=C_DEEP, padx=14, pady=10, highlightthickness=1, highlightbackground=C_LINE)
         sp.pack(fill="x", pady=(0, 8))
-        r1 = tk.Frame(sp, bg="#0e0c16"); r1.pack(fill="x")
+        r1 = tk.Frame(sp, bg=C_DEEP); r1.pack(fill="x")
         self.label(r1, "你唱的音", 10, C_SUB).grid(row=0, column=0, sticky="w")
         self.label(r1, "", 10, C_SUB).grid(row=0, column=1, padx=18)
         self.label(r1, "送出去的音", 10, C_SUB).grid(row=0, column=2, sticky="w")
@@ -370,7 +407,7 @@ class App:
         # ---- 聲音管道：名稱／裝置／音量／跳動波形
         box = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         box.pack(fill="x")
-        self.label(box, "聲音管道（有聲音時，右邊會跳動）", 11, C_PINK, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
+        self.label(box, "聲音管道（有聲音時，右邊會跳動）", 11, C_ACCENT, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 6))
         self.cb_in = self._row(box, 1, "🎙 麥克風", self.dev_in, self.g_in, 200, C_CYAN, "inp")
         self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 150, C_GREEN, "mon")
         self.cb_out = self._row(box, 3, "📡 直播", self.dev_out, self.g_out, 150, C_PINK, "out")
@@ -383,22 +420,26 @@ class App:
         # 伴奏對齊：直播裡人聲和伴奏沒貼齊時調這裡
         al = tk.Frame(box, bg=C_CARD)
         al.grid(row=6, column=1, columnspan=4, sticky="w", pady=(6, 0))
-        self.label(al, "⏱ 伴奏對齊", 10, C_TXT, True).pack(side="left")
-        self.label(al, "伴奏提早", 9, C_SUB).pack(side="left", padx=(8, 2))
-        ttk.Scale(al, from_=-150, to=150, variable=self.bgm_trim, orient="horizontal", length=200,
-                  command=lambda v: self.on_trim()).pack(side="left")
-        self.label(al, "伴奏延後", 9, C_SUB).pack(side="left", padx=(2, 6))
+        self.label(al, "⏱ 對齊", 10, C_TXT, True).pack(side="left")
+        ttk.Scale(al, from_=-150, to=150, variable=self.bgm_trim, orient="horizontal", length=170,
+                  command=lambda v: self.on_trim()).pack(side="left", padx=(6, 2))
         vl = self.label(al, "", 9, C_SUB, width=7)
         vl.pack(side="left")
         self.bgm_trim._fmt = (vl, "{:+.0f} ms")
-        self.button(al, "↺", lambda: (self.bgm_trim.set(0), self.on_trim()), size=9).pack(side="left", padx=4)
-        self.label(box, "對齊方法：錄一段 → 播放 → 邊聽邊拉（播放中會即時改變）。人聲比伴奏慢＝往右，人聲比伴奏快＝往左。",
+        self.button(al, "↺", lambda: (self.bgm_trim.set(0), self.on_trim()), size=8).pack(side="left", padx=(0, 18))
+        self.label(al, "🎚 避讓", 10, C_TXT, True).pack(side="left")
+        ttk.Scale(al, from_=0, to=100, variable=self.polish["duck"], orient="horizontal", length=140,
+                  command=lambda v: self.apply()).pack(side="left", padx=(6, 2))
+        vl = self.label(al, "", 9, C_SUB, width=5)
+        vl.pack(side="left")
+        self.polish["duck"]._fmt = (vl, "{:.0f}%")
+        self.label(box, "對齊：錄一段邊聽邊拉，人聲比伴奏慢＝往右、快＝往左。避讓：唱歌時伴奏自動讓開一點，人聲更貼合。",
                    9, C_SUB, anchor="w").grid(row=7, column=1, columnspan=4, sticky="w")
 
         # ---- 效果
         fx = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         fx.pack(fill="x", pady=10)
-        self.label(fx, "效果（再按一次＝關掉）", 11, C_PINK, True).pack(anchor="w", pady=(0, 2))
+        self.label(fx, "效果（再按一次＝關掉）", 11, C_ACCENT, True).pack(anchor="w", pady=(0, 2))
         self.now_label = self.label(fx, "", 1, C_CARD)   # 保留給測試用（不顯示內容）
         row = tk.Frame(fx, bg=C_CARD)
         row.pack(fill="x")
@@ -422,7 +463,7 @@ class App:
         cell = tk.Frame(row, bg=C_CARD)
         cell.pack(side="left", padx=(8, 3))
         self.label(cell, "每個都能調", 8, C_SUB).pack()
-        tb = self.button(cell, "🎛 細調", lambda: self.open_mixer("fx"), color="#3a2f5c", size=10)
+        tb = self.button(cell, "🎛 細調", lambda: self.open_mixer("fx"), color="#2c4a63", size=10)
         tb.config(pady=4, padx=6)
         tb.pack(fill="x")
         # 混響 A／B／C、去齒音：和效果完全分開，切換任何效果都不會跑掉，按效果也不會自己加混響
@@ -448,6 +489,20 @@ class App:
         self.deess._fmt = (vl, "{:.0f}%")
         self.label(fx, "↑ 混響和去齒音所有效果共用：你拉多少就是多少，切換效果不會變；深度拉到 0＝沒有混響。⚙＝更多細調（殘響長度、明亮度、立體寬度…）",
                    9, C_SUB, anchor="w", justify="left", wraplength=900).pack(fill="x")
+        pol = tk.Frame(fx, bg=C_CARD)
+        pol.pack(fill="x", pady=(8, 0))
+        self.label(pol, "✨ 人聲質感", 11, C_TXT, True).grid(row=0, column=0, sticky="w")
+        for n, k in enumerate(("loud", "clarity", "thick")):
+            self.label(pol, POLISH_NAMES[k], 9, C_SUB).grid(row=0, column=1 + n * 3, padx=(10, 2))
+            ttk.Scale(pol, from_=0, to=100, variable=self.polish[k], orient="horizontal", length=120,
+                      command=lambda _v: self.apply()).grid(row=0, column=2 + n * 3)
+            vl = self.label(pol, "", 9, C_SUB, width=5)
+            vl.grid(row=0, column=3 + n * 3)
+            self.polish[k]._fmt = (vl, "{:.0f}%")
+        self.button(pol, "✨ 一鍵 CD 質感", self.apply_cd_template, color="#2c4a63", size=10).grid(row=0, column=10, padx=(10, 4))
+        self.button(pol, "⚙", lambda: self.open_mixer("polish"), size=9).grid(row=0, column=11)
+        self.label(fx, "↑ 讓人聲在手機、耳機上都大聲清楚好聽：響度＝自動把音量穩住，清晰度＝更清楚有空氣感，厚度＝更飽滿（預設都是 0，不會改到你現在的聲音）",
+                   9, C_SUB, anchor="w", justify="left", wraplength=900).pack(fill="x")
         el = tk.Frame(fx, bg=C_CARD)
         el.pack(fill="x", pady=(8, 0))
         self.label(el, "電音風格：", 10).pack(side="left")
@@ -465,7 +520,7 @@ class App:
         # ---- 錄音
         rc = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         rc.pack(fill="x")
-        self.label(rc, "錄音（每錄一段就先暫存在下面清單，想存再存）", 11, C_PINK, True).pack(anchor="w", pady=(0, 6))
+        self.label(rc, "錄音（每錄一段就先暫存在下面清單，想存再存）", 11, C_ACCENT, True).pack(anchor="w", pady=(0, 6))
         row = tk.Frame(rc, bg=C_CARD)
         row.pack(fill="x")
         self.btn_rec = self.button(row, "● 錄音", self.toggle_rec, size=12)
@@ -476,8 +531,8 @@ class App:
         self.button(row, "🗑 刪除", self.delete_take, size=12).pack(side="left", expand=True, fill="x", padx=3)
         self.takes = []          # 暫存的錄音：每段 {name, wet, dry, secs}
         self._take_no = 0
-        self.take_list = tk.Listbox(rc, height=4, bg="#13111c", fg=C_TXT, selectbackground=C_PINK,
-                                    selectforeground="#2a0a1a", font=(FONT, 10), activestyle="none", bd=0,
+        self.take_list = tk.Listbox(rc, height=4, bg=C_DEEP, fg=C_TXT, selectbackground=C_ACCENT,
+                                    selectforeground="white", font=(FONT, 10), activestyle="none", bd=0,
                                     highlightthickness=0, exportselection=False)
         self.take_list.pack(fill="x", pady=(6, 0))
         self.take_list.bind("<Double-Button-1>", lambda e: self.play("wet"))
@@ -490,11 +545,12 @@ class App:
         self.btn_adv.pack(anchor="w", pady=(10, 0))
         self.adv = tk.Frame(wrap, bg=C_CARD, padx=12, pady=10)
         tk.Checkbutton(self.adv, text="超低延遲（有爆音就取消勾選）", variable=self.ultra, bg=C_CARD, fg=C_TXT,
-                       selectcolor="#13111c", activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
+                       selectcolor=C_DEEP, activebackground=C_CARD, font=(FONT, 10)).grid(row=0, column=0, columnspan=3, sticky="w")
         tk.Checkbutton(self.adv, text="專屬模式：開機自動開「變聲」，關掉前會再確認（怕怕專用，其他歌手不用勾）",
-                       variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor="#13111c",
+                       variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP,
                        activebackground=C_CARD, font=(FONT, 10)).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._slider(self.adv, 3, "耳機混一點原聲（抓拍用）", self.g_dry, 0, 100, "{:.0f}%")
+        self._slider(self.adv, 7, "視窗透明度（微透明）", self.alpha, 70, 100, "{:.0f}%")
         self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=10).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.status = self.label(self.adv, "", 9, C_SUB, justify="left", anchor="w")
         self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -503,7 +559,7 @@ class App:
         self.hint.pack(fill="x", pady=(8, 0))
         # ---- 第二頁：混音台
         self.mixer = mixer.MixerPage(self.nb, self)
-        self.nb.add(self.mixer, text="🎛 混音台（細調）")
+        self.nb.add(self.mixer, text="🎛 細調")
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
         self.refresh_scene_bar()
 
@@ -643,6 +699,8 @@ class App:
                   phone=bool(g("phone")), phone_dist=g("phone_dist") / 100, machine=bool(g("machine")),
                   eq_lo=g("eq_lo"), eq_mid=g("eq_mid"), eq_hi=g("eq_hi"), comp=g("comp") / 100,
                   card=bool(self.card.get()), electro_fx=g("electro_fx") / 100, deess=float(self.deess.get()) / 100)
+        for k in POLISH:
+            kw[k] = float(self.polish[k].get()) / 100
         for i, r in enumerate(self.rv):
             t = r["type"].get()
             n = "rv%d_" % (i + 1)
@@ -658,6 +716,10 @@ class App:
             self.eng.set_gain(name, float(v.get()) / 100)
         self.eng.bgm_on = bool(self.bgm_on.get())
         self.eng.bgm_trim_ms = float(self.bgm_trim.get())
+        try:
+            self.root.attributes("-alpha", max(0.7, min(1.0, float(self.alpha.get()) / 100)))
+        except Exception:
+            pass
         if hasattr(self, "btn_card"):
             self.refresh_buttons()
         if hasattr(self, "mixer"):
@@ -814,12 +876,35 @@ class App:
         if hasattr(self, "mixer") and self.mixer.editing == ("rv", i):
             self.mixer.open_editor("rv", i)
 
+    # ---- 一鍵 CD 質感（參考 Studio One 混音教學：暗而柔的板式混響＋加寬＋響度）
+    def apply_cd_template(self, ask=True):
+        if ask and not messagebox.askyesno(
+                "一鍵 CD 質感",
+                "會把混響 A 換成「CD 絲滑板式」（深度 25%）、混響 B／C 歸零，\n"
+                "並打開響度、清晰度、厚度、加寬、伴奏避讓。\n\n效果和變聲都不會動。要套用嗎？\n"
+                "（建議先按「＋ 存目前設定」把現在的設定存起來）"):
+            return
+        r = self.rv[0]
+        r["type"].set("CD 絲滑板式")
+        for k, v in self.reverb_type_defaults("CD 絲滑板式").items():
+            r[k].set(round(v, 1))
+        r["mix"].set(25)
+        for rr in self.rv[1:]:
+            rr["mix"].set(0)
+        for k, v in CD_TEMPLATE.items():
+            self.polish[k].set(v)
+        self.apply()
+        if hasattr(self, "mixer") and self.mixer.editing and self.mixer.editing[0] in ("rv", "polish"):
+            self.mixer.open_editor(*self.mixer.editing)
+        self.msg.config(text="已套用 CD 質感。喜歡的話按最上面「＋ 存目前設定」存起來。", fg=C_SUB)
+
     # ---- 我的設定（自己取名字的存檔）
     def scene_snapshot(self):
         return dict(active=self.active_preset, el_style=self.el_style.get(),
                     tweaks=json.loads(json.dumps(self.fx_tweaks)),
                     reverb=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv],
-                    deess=float(self.deess.get()))
+                    deess=float(self.deess.get()),
+                    polish={k: float(self.polish[k].get()) for k in POLISH})
 
     def _store_scenes(self):
         self.scenes_var.set(json.dumps(self.scenes, ensure_ascii=False))
@@ -854,6 +939,9 @@ class App:
                 if k in rr:
                     self.rv[i][k].set(rr[k])
         self.deess.set(s.get("deess", self.deess.get()))
+        for k, v in s.get("polish", {}).items():
+            if k in self.polish:
+                self.polish[k].set(v)
         act = s.get("active")
         if act in PRESETS:
             self.active_preset = None
@@ -914,18 +1002,18 @@ class App:
         bar = self.scene_bar
         for w in bar.winfo_children():
             w.destroy()
-        tk.Label(bar, text="💾 我的設定：", bg=bar["bg"], fg=C_PINK, font=(FONT, 10, "bold")).pack(side="left")
+        tk.Label(bar, text="💾 我的設定", bg=bar["bg"], fg=C_ACCENT, font=(FONT, 10, "bold")).pack(side="left", padx=(0, 8))
         self.scene_btns = {}
         for n, name in enumerate(self.scenes):
             on = name == self.current_scene
-            c = C_GREEN if on else C_BTN
+            c = C_ACCENT if on else C_BTN
             txt = ("F%d " % (n + 1) if n < 8 else "") + name
-            b = tk.Button(bar, text=txt, command=lambda k=name: self.load_scene(k), bg=c, fg="#0b2216" if on else C_TXT,
+            b = tk.Button(bar, text=txt, command=lambda k=name: self.load_scene(k), bg=c, fg="white" if on else C_TXT,
                           activebackground=c, relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2)
             b.pack(side="left", padx=2)
             b.bind("<Button-3>", lambda e, k=name: self.scene_menu(k, e))
             self.scene_btns[name] = b
-        tk.Button(bar, text="＋ 存目前設定", command=self.save_scene, bg="#3a2f5c", fg=C_TXT, activebackground="#3a2f5c",
+        tk.Button(bar, text="＋ 存目前設定", command=self.save_scene, bg="#2c4a63", fg=C_TXT, activebackground="#2c4a63",
                   relief="flat", font=(FONT, 10, "bold"), cursor="hand2", bd=0, padx=8, pady=2).pack(side="left", padx=(8, 4))
         if self.scenes:
             tk.Label(bar, text="（按一下＝切換；右鍵＝覆蓋／改名／刪除）", bg=bar["bg"], fg=C_SUB, font=(FONT, 9)).pack(side="left")
@@ -958,17 +1046,17 @@ class App:
         else:
             txt = "🎭 變聲（升 1.5 半音）：開" if on else "🎭 變聲：關（原聲）"
         self.btn_card.config(text=txt,
-                             bg=c, activebackground=c, fg="#2a0a1a" if on else ("#3a2a00" if self.personal.get() else C_TXT))
+                             bg=c, activebackground=c, fg=C_DARKTXT if on else (C_DARKTXT if self.personal.get() else C_TXT))
         b = bool(self.bgm_on.get())
         c = C_GREEN if b else C_BTN
         self.btn_bgm.config(text="🎵 伴奏：開" if b else "🔇 伴奏：關", bg=c, activebackground=c,
-                            fg="#0b2216" if b else C_TXT)
+                            fg=C_DARKTXT if b else C_TXT)
         el_on = self.active_preset == "electro"
         self.cb_style.config(state="readonly" if el_on else "disabled")
         self.style_hint.config(text="" if el_on else "（先按「⚡ 電音」才能選）")
         none = self.active_preset is None
-        c = C_GREEN if none else C_BTN
-        self.btn_none.config(bg=c, activebackground=c, fg="#0b2216" if none else C_TXT)
+        c = C_ACCENT if none else C_BTN
+        self.btn_none.config(bg=c, activebackground=c, fg="white" if none else C_TXT)
         voice = "變聲" if on else ("⚠ 原音" if self.personal.get() else "原聲")
         fxname = PRESET_NAMES[self.active_preset].split(" ", 1)[1] if self.active_preset else "無效果"
         extra = ""
@@ -985,8 +1073,8 @@ class App:
             kind.get(self.active_preset, "沒有修音、沒有電音（一般聲音）"), mark(bool(self.bgm_on.get()))),
             fg=C_TXT if (on or not self.personal.get()) else C_YELLOW)
         for k, btn in self.preset_btns.items():
-            c = C_GREEN if self.active_preset == k else C_BTN
-            btn.config(bg=c, activebackground=c, fg="#0b2216" if self.active_preset == k else C_TXT)
+            c = C_ACCENT if self.active_preset == k else C_BTN
+            btn.config(bg=c, activebackground=c, fg="white" if self.active_preset == k else C_TXT)
         self.btn_play_wet.config(text="■ 停止" if self.eng.playing else "▶ 聽選的那段")
 
     # ------------------------------------------------------------ 錄音
@@ -1014,7 +1102,7 @@ class App:
             if self.eng.playing:
                 self.eng.stop_play()
             self.eng.start_recording()
-            self.btn_rec.config(text="■ 停止錄音", bg="#c2306f", activebackground="#c2306f")
+            self.btn_rec.config(text="■ 停止錄音", bg="#d9534f", activebackground="#d9534f")
 
     def refresh_takes(self, select=None):
         self.take_list.delete(0, "end")
@@ -1180,11 +1268,11 @@ class App:
                                % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bmsg))
             self.auto_protect()
             if getattr(e, "last_error", None):
-                self.msg.config(text="⚠ 處理出錯，聲音沒有送出去！請截圖給 Claude：" + str(e.last_error)[:80], fg="#ff8a8a")
+                self.msg.config(text="⚠ 處理出錯，聲音沒有送出去！請截圖給 Claude：" + str(e.last_error)[:80], fg="#ff7b72")
             elif e.in_clip > 0.5:
                 self.msg.config(text="⚠ 麥克風進來就太大聲（破音）！請把聲卡上的麥克風旋鈕轉小一點，或把「麥克風」音量拉小。",
-                                fg="#ff8a8a")
-            elif self.msg.cget("fg") == "#ff8a8a":
+                                fg="#ff7b72")
+            elif self.msg.cget("fg") == "#ff7b72":
                 self.msg.config(text="運作中。", fg=C_SUB)
             if e.recording:
                 self.rec_label.config(text="錄音中… %.1f 秒" % (e.rec_samples / engine.SR))

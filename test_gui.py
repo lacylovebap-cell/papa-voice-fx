@@ -158,6 +158,30 @@ a.save_settings()
 s2 = a.load_settings()
 check("我的設定、細調會存進設定檔", "怕怕專屬一" in s2.get("scenes", "") and "fx_tweaks" in s2)
 a.clear_fx()
+# 一鍵 CD 質感：只動混響和人聲質感，不動效果和變聲
+a.preset("talk"); card1 = a.card.get()
+a.apply_cd_template(ask=False)
+check("一鍵 CD 質感：混響 A＝CD 絲滑板式 25%、B／C 歸零", a.rv[0]["type"].get() == "CD 絲滑板式" and abs(fx.params["rv1_mix"] - 0.25) < 1e-6
+      and fx.params["rv2_mix"] == 0 and fx.params["rv3_mix"] == 0)
+check("一鍵 CD 質感：響度、清晰度、厚度、加寬、避讓打開", fx.params["loud"] == 0.5 and fx.params["clarity"] == 0.4
+      and fx.params["thick"] == 0.25 and fx.params["widen"] == 0.6 and fx.params["duck"] == 0.3)
+check("一鍵 CD 質感：效果和變聲不變", a.active_preset == "talk" and a.card.get() == card1)
+a.save_scene("CD 測試")
+for k in app.POLISH:
+    a.polish[k].set(0)
+a.apply()
+a.load_scene("CD 測試")
+check("我的設定也會記住人聲質感", fx.params["loud"] == 0.5 and fx.params["widen"] == 0.6)
+a.delete_scene("CD 測試")
+a.open_mixer("polish"); root.update()
+check("細調頁：人聲質感旋鈕（響度、清晰度、厚度、加寬）", all(k in a.mixer.knobs for k in ("loud", "clarity", "thick", "widen")))
+a.nb.select(0)
+for k in app.POLISH:
+    a.polish[k].set(0)
+a.preset("talk")
+a.alpha.set(90); a.apply()
+check("視窗透明度可以調", abs(float(a.alpha.get()) - 90) < 1e-9)
+a.alpha.set(97); a.apply()
 # 伴奏對齊：錄音分開存人聲和伴奏，播放時照目前的對齊重新混
 import numpy as _np
 v0 = _np.zeros(48000, _np.float32); b0 = _np.zeros(48000, _np.float32); b0[1000] = 0.5

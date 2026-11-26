@@ -140,7 +140,7 @@ struct Tuner {
     static constexpr double DMIN = 3.0;
     static const int JFLOOR = 96;
     static const int SHIFT_LAT = 120;   // 變調平均延遲估計（樣本）
-    static const int LOOKAHEAD = 360;   // 壓平音高的模式（電音、機器人）多等 7.5 ms，讓音高判斷跟上
+    static const int LOOKAHEAD = 0;     // 不額外等待（任何功能都不能增加延遲）
     double sr, srD;
     int W;
     TunerParams p;
@@ -448,12 +448,14 @@ struct Compressor {
 // ---------------------------------------------------------------- 混響
 // 類型：(延遲倍率, 殘響長度, 明亮度, 預延遲 ms, 立體寬度, 低頻清除 Hz)，順序與 dsp.py REVERB_TYPES 相同
 struct ReverbType { double scale, size, bright, pre, width, lowcut; };
-static const ReverbType REVERB_TYPES[5] = {
+static const int REVERB_NTYPES = 6;
+static const ReverbType REVERB_TYPES[REVERB_NTYPES] = {
     {1.00, 0.62, 1.00, 0.0, 1.0, 0.0},     // 經典
     {0.55, 0.45, 0.60, 4.0, 0.7, 150.0},   // 房間
     {0.80, 0.60, 0.85, 12.0, 1.0, 200.0},  // 人聲板
     {1.25, 0.75, 0.55, 25.0, 1.0, 120.0},  // 大廳
     {1.55, 0.90, 0.45, 45.0, 1.0, 100.0},  // 教堂
+    {0.85, 0.72, 0.30, 25.0, 1.0, 0.0},    // CD 絲滑板式（Valhalla Smooth Plate／1970s 風格）
 };
 static const int REVERB_LAYERS = 3;
 
@@ -511,13 +513,14 @@ struct ReverbLayer {
     std::vector<double> pbuf;
     int pw = 0, pre = 0;
     Biquad hp; bool hp_on = false; double hp_f = -1;
+    Biquad lpL, lpR; bool lp_on = false; double lp_f = -1;   // 高頻柔化
     void init(double s) {
         sr = s;
         L.init(s, 1.0, 0); R.init(s, 1.0, 23);
         pbuf.assign((size_t)(s * 0.12), 0.0);
     }
     void set_type(int t) {
-        t = std::max(0, std::min(5, t));
+        t = std::max(0, std::min(REVERB_NTYPES, t));
         if (t == type) return;
         type = t;
         if (type > 0) {
@@ -535,6 +538,13 @@ struct ReverbLayer {
             hp_on = f >= 20;
             if (hp_on) hp = Biquad(BQ_HP, f, sr, 0, 0.707);
         }
+        double b = cl(bright);
+        double fl = 3000.0 + 15000.0 * b * b;
+        if (fl != lp_f) {
+            lp_f = fl;
+            lp_on = fl < 17500;
+            if (lp_on) { lpL = Biquad(BQ_LP, fl, sr, 0, 0.707); lpR = Biquad(BQ_LP, fl, sr, 0, 0.707); }
+        }
     }
     bool active() const { return type > 0 && mix > 0.001; }
     inline void tick(double y, double& m, double& sd) {
@@ -544,9 +554,62 @@ struct ReverbLayer {
         double xin = pbuf[(pw - pre + P) % P];
         if (++pw >= P) pw = 0;
         double l = L.tick(xin), r = R.tick(xin);
+        if (lp_on) { l = lpL.tick(l); r = lpR.tick(r); }
         double k = mix * 1.6 * std::sqrt(2.0);
         m = (l + r) * 0.5 * k;
         sd = (l - r) * 0.5 * k * std::min(1.0, std::max(0.0, width));
+    }
+};
+
+// ---------------------------------------------------------------- 人聲質感（CD 質感）
+// 人聲加寬：四個稍微延遲、音高微微飄動的副本，左右分開（像 Doubler 外掛）
+struct Doubler {
+    double sr; std::vector<double> buf; int L = 1 << 13, w = 0; long long t = 0;
+    Doubler(double s = 48000) : sr(s), buf(1 << 13, 0.0) {}
+    inline void tick(double y, double thick, double widen, double& m, double& sd) {
+        static const double V[4][4] = {{9.4, 0.25, 0.31, -1.0}, {16.0, 0.30, 0.23, 1.0}, {23.7, 0.35, 0.37, -0.8}, {21.0, 0.28, 0.27, 0.8}};
+        buf[w] = y;
+        double tt = (double)t / sr, mid = 0, side = 0;
+        for (int k = 0; k < 4; k++) {
+            double d = (V[k][0] + V[k][1] * std::sin(2 * PI * V[k][2] * tt + V[k][0])) * sr / 1000.0;
+            double pos = (double)w - d;
+            double fl = std::floor(pos); long i0 = (long)fl; double fr = pos - fl;
+            double a = buf[(size_t)(((i0 % L) + L) % L)], b = buf[(size_t)((((i0 + 1) % L) + L) % L)];
+            double v = a * (1 - fr) + b * fr;
+            mid += v; side += v * V[k][3];
+        }
+        w = (w + 1) % L; t++;
+        m = mid * 0.18 * thick; sd = side * 0.18 * widen;
+    }
+};
+
+// 響度：自動把人聲穩定在好聽的大小，再柔和收頂；沒聲音時不放大底噪
+struct Leveler {
+    double sr, gdb = 0;
+    Leveler(double s = 48000) : sr(s) {}
+    void process(double* y, int n, double amt) {
+        if (amt <= 0.001) {
+            gdb *= 0.9;
+            if (std::fabs(gdb) < 0.01) { gdb = 0; return; }
+        }
+        double e = 0;
+        for (int i = 0; i < n; i++) e += y[i] * y[i];
+        double lvl = 20 * std::log10(std::sqrt(e / n + 1e-12));
+        double target = -20.0 + 4.0 * amt, want, tau;
+        if (lvl < -48.0 || amt <= 0.001) { want = 0.0; tau = 0.8; }
+        else {
+            want = std::max(-9.0, std::min(12.0, target - lvl)) * amt;
+            tau = want < gdb ? 0.12 : 0.9;
+        }
+        double dt = n / sr;
+        double nw = gdb + (want - gdb) * (1 - std::exp(-dt / tau));
+        for (int i = 0; i < n; i++) {
+            double g = std::pow(10.0, (gdb + (nw - gdb) * (i + 1) / n) / 20);
+            double z = y[i] * g, a = std::fabs(z);
+            if (a > 0.7) z = (z > 0 ? 1 : -1) * (0.7 + 0.28 * std::tanh((a - 0.7) / 0.28));
+            y[i] = z;
+        }
+        gdb = nw;
     }
 };
 
@@ -680,6 +743,7 @@ struct FxParams {
     bool phone = false; double phone_dist = 0.25; bool machine = false;
     double eq_lo = 0, eq_mid = 0, eq_hi = 0, comp = 0.4;
     bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0, robot_fx = 0;
+    double loud = 0, clarity = 0, thick = 0, widen = 0;   // 人聲質感（預設關閉）
 };
 
 struct VoiceFx {
@@ -700,12 +764,16 @@ struct VoiceFx {
     Biquad color_eq[5];
     int color_cur = -1;
     ReverbLayer layers[REVERB_LAYERS];
+    Biquad clar[3];
+    Doubler doubler;
+    Leveler leveler;
     std::vector<float> side;        // 混響的左右差（只給耳機做立體寬度）
     double ring_ph = 0;
     std::vector<double> t1, t2;
 
     VoiceFx(double s = 48000, double window_ms = 21.0)
-        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s) {
+        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), doubler(s), leveler(s) {
+        clar[0] = Biquad(BQ_PEAKING, 250, s, 0.0, 1.0); clar[1] = Biquad(BQ_PEAKING, 5000, s, 0.0, 1.0); clar[2] = Biquad(BQ_HIGHSHELF, 9000, s, 0.0);
         for (auto& L : layers) L.init(s);
         side.assign(8192, 0.f);
         card_eq[0] = Biquad(BQ_LOWSHELF, 350, s, -6.0);
@@ -730,6 +798,7 @@ struct VoiceFx {
             }
         }
         eq[0].set_gain(p.eq_lo); eq[1].set_gain(p.eq_mid); eq[2].set_gain(p.eq_hi);
+        clar[0].set_gain(-3.0 * p.clarity); clar[1].set_gain(2.5 * p.clarity); clar[2].set_gain(5.0 * p.clarity);
         comp.amount = p.comp;
     }
 
@@ -807,15 +876,27 @@ struct VoiceFx {
         if (p.electro_fx > 0.001) electro.process(y, n, p.electro_fx);
         for (auto& b : color_eq) b.run(y, n);
         for (auto& b : eq) b.run(y, n);
+        for (auto& b : clar) b.run(y, n);
         deesser.process(y, n, p.deess);
         comp.process(y, n);
-        // 混響：每一層各自加上去（中間＝直播聽得到；兩側＝耳機的立體寬度）
+        leveler.process(y, n, p.loud);
+        // 人聲加寬／厚度
         if ((int)side.size() < n) side.resize(n);
+        std::fill(side.begin(), side.begin() + n, 0.f);
+        {
+            double th = p.thick, wd = p.widen;
+            for (int i = 0; i < n; i++) {
+                double m, sd;
+                doubler.tick(y[i], th, wd, m, sd);
+                if (th > 0.001 || wd > 0.001) { y[i] += m; side[i] = (float)sd; }
+            }
+        }
+        // 混響：每一層各自加上去（中間＝直播聽得到；兩側＝耳機的立體寬度）
         bool any = false;
         for (auto& L : layers) any = any || L.active();
         if (any) {
             for (int i = 0; i < n; i++) {
-                double dry = y[i], m = 0, sd = 0;
+                double dry = y[i], m = 0, sd = side[i];
                 for (auto& L : layers) {
                     if (!L.active()) continue;
                     double mm, ss;
@@ -825,7 +906,7 @@ struct VoiceFx {
                 y[i] = dry + m;
                 side[i] = (float)sd;
             }
-        } else std::fill(side.begin(), side.begin() + n, 0.f);
+        }
         for (int i = 0; i < n0; i++) io[i] = (float)std::max(-1.0, std::min(1.0, y[i]));
     }
 };
