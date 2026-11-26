@@ -21,7 +21,7 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
       - name: 編譯 C++ 底層引擎
         shell: cmd
-        run: cl /nologo /O2 /EHsc /std:c++17 /utf-8 /LD native\src\fx_api.cpp native\src\engine.cpp /Fe:papa_engine.dll ole32.lib
+        run: cl /nologo /O2 /EHsc /std:c++17 /utf-8 /DNOMINMAX /LD native\src\fx_api.cpp native\src\engine.cpp /Fe:papa_engine.dll ole32.lib
       - name: 測試 C++ 底層引擎
         run: |
           python test_native_dsp.py

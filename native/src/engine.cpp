@@ -1,5 +1,8 @@
 // 怕怕調音台 - 底層即時音訊引擎（miniaudio / WASAPI）
 // 收音＋耳機同一條線（duplex），處理在音訊執行緒內完成；直播（CABLE）與伴奏各自有對時緩衝。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #define MA_NO_DECODING
 #define MA_NO_ENCODING
 #define MA_NO_GENERATION
