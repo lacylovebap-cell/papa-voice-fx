@@ -28,7 +28,7 @@ PAPA_API int papa_fx_set(void* h, const char* key, double v) {
     else if (k == "speed") t.speed = v;
     else if (k == "shift") t.shift = v;
     else if (k == "robot") t.robot = v;
-    else if (k == "flex") t.flex = v; else if (k == "tol") t.tol = v; else if (k == "smooth") t.smooth = v > 0.5;
+    else if (k == "flex") t.flex = v; else if (k == "tol") t.tol = v;
     else if (k == "humanize") t.humanize = v;
     else if (k == "sticky") t.sticky = v;
     else if (k == "predict") t.predict = v;

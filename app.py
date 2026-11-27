@@ -326,7 +326,6 @@ class App:
         if self.personal.get():
             self.card.set(1)
         self.ultra = self.var("ultra_v2", 0, tk.IntVar)
-        self.smooth = self.var("smooth_shift", 0, tk.IntVar)   # 變聲柔順作法（預設關＝低延遲）
         self.alpha = self.var("alpha", 97, D)       # 視窗透明度（微透明）
         self.listen = self.var("listen", 0, tk.IntVar, remember=False)   # 試聽：0 原本／1 直播 App／2 手機外放
         self.block_now = 128 if NATIVE else 256
@@ -735,13 +734,10 @@ class App:
         tk.Checkbutton(self.adv, text="專屬模式：開機自動開「變聲」，關掉前會再確認（怕怕專用，其他歌手不用勾）",
                        variable=self.personal, command=self.on_personal, bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP,
                        activebackground=C_CARD, font=(FONT, 9)).grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        tk.Checkbutton(self.adv, text="變聲柔順模式（接縫少、比較自然，延遲多約 4 ms；不勾＝最低延遲）",
-                       variable=self.smooth, command=self.apply, bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP,
-                       activebackground=C_CARD, font=(FONT, 9)).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        self._slider(self.adv, 3, "視窗透明度（微透明）", self.alpha, 70, 100, "{:.0f}%")
-        self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=9).grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self._slider(self.adv, 2, "視窗透明度（微透明）", self.alpha, 70, 100, "{:.0f}%")
+        self.button(self.adv, "重新尋找裝置", lambda: self.refresh_devices(True), size=9).grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.status = self.label(self.adv, "", 8, C_SUB, justify="left", anchor="w")
-        self.status.grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.status.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self.hint = self.label(wrap, "其他快捷鍵 Ctrl+Alt+：6 變聲　B 伴奏　R 錄音　F1～F8 我的設定", 8, C_SUB, anchor="w")
         self.hint.pack(fill="x", pady=(6, 0))
         # ---- 第二頁：混音台
@@ -962,7 +958,6 @@ class App:
         kw["gate"] = float(self.gate.get()) / 100
         kw["dehum"] = bool(self.dehum.get())
         kw["mon_mode"] = int(self.listen.get())
-        kw["smooth"] = bool(self.smooth.get())
         for i, r in enumerate(self.rv):
             t = r["type"].get()
             n = "rv%d_" % (i + 1)

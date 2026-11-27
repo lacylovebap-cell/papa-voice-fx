@@ -495,16 +495,6 @@ check("清晰度：空氣感（10 kHz 提升）", gain_at(10000, clarity=1.0) > 
 check("清晰度：去悶（250 Hz 降低）", gain_at(250, clarity=1.0) < -2, "%.1f dB" % gain_at(250, clarity=1.0))
 check("清晰度 0：完全不影響", abs(gain_at(3000, clarity=0.0)) < 0.05)
 
-# ---------- 變聲作法：低延遲（預設）／柔順（接縫少）
-def splice_rate(smooth):
-    fx = VoiceFx(SR, low_latency=True); fx.tuner.set_window(15.0); fx.set(comp=0.0, verb=0.0, card=True, smooth=smooth)
-    xs2 = speechlike(3.0)
-    for s0 in range(0, len(xs2) // 128 * 128, 128):
-        fx.process(xs2[s0:s0 + 128])
-    return fx.tuner.splices / 3.0
-sr0, sr1 = splice_rate(False), splice_rate(True)
-check("柔順模式：接縫明顯變少（比較自然）", sr1 < sr0 * 0.5, "每秒 %.0f → %.0f 次" % (sr0, sr1))
-
 # ---------- 延遲守門：任何功能都不能讓人聲變慢
 def onset_ms(**kw):
     fx = VoiceFx(SR, low_latency=True); fx.tuner.set_window(15.0); fx.set(comp=0.0, verb=0.0, **kw)

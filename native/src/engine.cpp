@@ -227,7 +227,7 @@ struct Engine {
             else if (k == "speed") t.speed = v;
             else if (k == "shift") t.shift = v;
             else if (k == "robot") t.robot = v;
-            else if (k == "flex") t.flex = v; else if (k == "tol") t.tol = v; else if (k == "smooth") t.smooth = v > 0.5;
+            else if (k == "flex") t.flex = v; else if (k == "tol") t.tol = v;
             else if (k == "humanize") t.humanize = v;
             else if (k == "sticky") t.sticky = v;
             else if (k == "predict") t.predict = v;
@@ -594,7 +594,7 @@ struct Engine {
         double play_frames = sep_mode
             ? (double)mon_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, mon_dev.playback.internalPeriods) + (double)mon_target
             : (double)main_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, main_dev.playback.internalPeriods);
-        double shifter = fx->tuner.shift_lat();
+        double shifter = Tuner::SHIFT_LAT;
         double rt = cap_frames + play_frames + block + shifter;
         latency_ms = rt * 1000.0 / SR;
         bgm_comp = (long)rt;

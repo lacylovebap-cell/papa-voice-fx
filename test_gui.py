@@ -352,10 +352,6 @@ a.preset("electro"); a.clear_fx()
 check("無效果：一鍵清掉所有效果", a.active_preset is None and fx.params["mode"] == "off")
 check("狀態文字：變聲＋無效果", "變聲" in a.now_label.cget("text") and "無效果" in a.now_label.cget("text"), a.now_label.cget("text"))
 check("超低延遲預設關閉", a.ultra.get() == 0)
-check("變聲預設是低延遲作法（柔順模式關）", a.smooth.get() == 0 and fx.params["smooth"] is False)
-a.smooth.set(1); a.apply()
-check("進階：可以打開變聲柔順模式", fx.params["smooth"] is True)
-a.smooth.set(0); a.apply()
 # 自動防爆音：緩衝不足一直增加 → 區塊加大
 import types
 a.eng.running = True

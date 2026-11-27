@@ -133,7 +133,6 @@ struct TunerParams {
     double tol = 0.0;       // 自然修音：容許誤差（半音）。已經夠準的就不修，聽起來不會被「拉平」
     double predict = 2.0;   // 以「參考區塊（256）」為單位
     double vibrato = 0.0;   // 自然顫音（dB）
-    bool smooth = false;    // 柔順作法：接縫少、比較自然，延遲多約 4 ms（進階設定，預設關＝低延遲）
 };
 
 struct Tuner {
@@ -141,9 +140,7 @@ struct Tuner {
     // 變調：單一讀取頭＋接合時短交叉淡化（見 dsp.py Tuner 說明）
     static constexpr double DMIN = 3.0;
     static const int JFLOOR = 96;
-    static const int JFLOOR_SMOOTH = 480;
-    static const int SHIFT_LAT = 120;   // 變調平均延遲估計（樣本，低延遲作法）
-    static const int SHIFT_LAT_SMOOTH = 280;
+    static const int SHIFT_LAT = 120;   // 變調平均延遲估計（樣本）
     static const int LOOKAHEAD = 0;     // 不額外等待（任何功能都不能增加延遲）
     double sr, srD;
     int W;
@@ -192,10 +189,7 @@ struct Tuner {
         X = std::max(192, W / 2);
         da = DMIN + JFLOOR; fading = false; prog = 0; xk = 1.0;
     }
-    int jmin(double r) const {
-        return (int)std::max((double)(p.smooth ? JFLOOR_SMOOTH : JFLOOR), std::ceil(2.0 * X * std::fabs(r - 1)));
-    }
-    int shift_lat() const { return p.smooth ? SHIFT_LAT_SMOOTH : SHIFT_LAT; }
+    int jmin(double r) const { return (int)std::max((double)JFLOOR, std::ceil(2.0 * X * std::fabs(r - 1))); }
 
     void update_scale() {
         const int* iv = SCALE_MAJOR; int n = 7;
@@ -399,7 +393,6 @@ struct Tuner {
         }
         double r = std::pow(2.0, (cur + vt) / 12.0);
         double dr = r - 1.0;
-        if (!fading) X = std::max(192, p.smooth ? W : W / 2);   // 交叉淡化進行中不換長度
         bool flat_mode = p.mode != M_OFF && p.mode != M_NATURAL;
         const double D0 = DMIN + (flat_mode ? LOOKAHEAD : 0);   // 讀取頭工作範圍下緣
         for (int i = 0; i < n; i++) {

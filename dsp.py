@@ -124,10 +124,8 @@ class Tuner:
     CORR_LEN = 384   # 比對長度（樣本）
     SEARCH = 480     # 搜尋範圍（10 ms，涵蓋 100 Hz 以上一個週期）
     DMIN = 3.0       # 讀取頭最少延遲（內插需要）
-    JFLOOR = 96      # 低延遲作法：每次至少跳 2 ms
-    JFLOOR_SMOOTH = 480   # 柔順作法（進階設定可開，預設關）：每次至少跳 10 ms，接縫少（約每秒 8 次），延遲多約 4 ms
-    SHIFT_LAT = 120  # 變調平均延遲估計（樣本，低延遲作法約 2.5 ms，伴奏對時用）
-    SHIFT_LAT_SMOOTH = 280   # 柔順作法約 5.8 ms
+    JFLOOR = 96      # 每次至少跳 2 ms
+    SHIFT_LAT = 120  # 變調平均延遲估計（樣本，約 2.5 ms，伴奏對時用）
     LOOKAHEAD = 0    # 不額外等待（怕怕要求：任何功能都不能增加延遲）
     H = 256
 
@@ -157,7 +155,7 @@ class Tuner:
         self.held = None
         self.kcount = 0
         self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0,
-                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0, vibrato=0.0, tol=0.0, smooth=False)
+                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0, vibrato=0.0, tol=0.0)
         self.hold_t = 0.0
         self.prev_target = None
         self.update(**{})
@@ -344,8 +342,6 @@ class Tuner:
 
         r = 2 ** ((self.cur + self.vt) / 12)
         self.extra = float(self.LOOKAHEAD) if p["mode"] in ("electro", "chrom", "scale", "robot") else 0.0
-        if self.db is None:      # 交叉淡化進行中不換長度（避免突然跳）
-            self.X = max(192, self.W if p.get("smooth", False) else self.W // 2)
         ext = np.concatenate((self.hist, x))
         s = self._shift(ext, n, r)
         self.hist = ext[-self.L:]
@@ -353,11 +349,7 @@ class Tuner:
 
     # ------------------------------------------------------------ 變調核心
     def _jmin(self, r):
-        jf = self.JFLOOR_SMOOTH if self.p.get("smooth", False) else self.JFLOOR
-        return int(max(jf, math.ceil(2 * self.X * abs(r - 1))))
-
-    def shift_lat(self):
-        return self.SHIFT_LAT_SMOOTH if self.p.get("smooth", False) else self.SHIFT_LAT
+        return int(max(self.JFLOOR, math.ceil(2 * self.X * abs(r - 1))))
 
     def _read(self, ext, pos):
         i1 = np.floor(pos).astype(np.int64)
@@ -932,7 +924,7 @@ class VoiceFx:
             lk = {f: kw["rv%d_%s" % (i + 1, f)] for f in REVERB_FIELDS if "rv%d_%s" % (i + 1, f) in kw}
             if lk:
                 L.set(**lk)
-        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict", "vibrato", "tol", "smooth"}
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict", "vibrato", "tol"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
         if "card" in kw:
             tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0
