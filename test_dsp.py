@@ -592,5 +592,17 @@ for i in range(0, SR - 255, 256):
 wet = np.concatenate(wets)
 check("混響的部分有記下來（給耳機混響用）", float(np.sqrt(np.mean(wet[SR // 2:] ** 2))) > 0.01)
 
+# ---------- 去電流聲：60 Hz 嗡聲（含 120／180／240／300）壓掉，人聲幾乎不變
+tt = np.arange(SR * 2) / SR
+hum = sum(0.02 / (k + 1) * np.sin(2 * np.pi * 60 * (k + 1) * tt) for k in range(4))
+vox = 0.2 * (np.sin(2 * np.pi * 330 * tt) + np.sin(2 * np.pi * 262 * tt) + np.sin(2 * np.pi * 440 * tt)) / 3   # C4、E4、A4
+def run_hum(sig, on):
+    f = VoiceFx(SR); f.set(comp=0.0, verb=0.0, deess=0.0, dehum=on)
+    return np.concatenate([f.process(sig[i:i + 256].astype(np.float32)) for i in range(0, len(sig) - 255, 256)])
+h0, h1 = rms(run_hum(hum, False)[SR:]), rms(run_hum(hum, True)[SR:])
+check("去電流聲：嗡聲小 20 dB 以上", 20 * np.log10(h0 / h1) > 20, "%.1f dB" % (20 * np.log10(h0 / h1)))
+v0, v1 = rms(run_hum(vox, False)[SR:]), rms(run_hum(vox, True)[SR:])
+check("去電流聲：人聲幾乎不變（差不到 1 dB）", abs(20 * np.log10(v1 / v0)) < 1.0, "%.2f dB" % (20 * np.log10(v1 / v0)))
+
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)

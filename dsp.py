@@ -879,7 +879,7 @@ class VoiceFx:
         self.p = dict(
             phone=False, phone_dist=0.25, machine=False,
             eq_lo=0.0, eq_mid=0.0, eq_hi=0.0, comp=0.4, verb=0.15, card=False, electro_fx=0.0, color="原本", deess=0.0, metal=0.0, robot_fx=0.0,
-            loud=0.0, clarity=0.0, thick=0.0, widen=0.0, gate=0.0,
+            loud=0.0, clarity=0.0, thick=0.0, widen=0.0, gate=0.0, dehum=False,
         )
         # 聲卡變音音色（由怕怕原聲／說話二比對量測）：中低頻 -6dB、3.2kHz 凹陷
         self.card_eq = [Biquad("lowshelf", 350, sr, -6.0), Biquad("peaking", 3200, sr, -5.0, q=1.4)]
@@ -910,6 +910,8 @@ class VoiceFx:
         self.doubler = Doubler(sr)
         self.leveler = Leveler(sr)
         self.gate = NoiseGate(sr)
+        self.dehum = [Biquad("hp", 75, sr, 0, 0.707), Biquad("hp", 75, sr, 0, 0.707)] + \
+            [Biquad("peaking", 60.0 * (i + 1), sr, -24.0, 40.0) for i in range(4)]   # 去電流聲（60 Hz 嗡聲，很窄不吃歌聲）
         self.info = (0.0, None, None)
         self.set()
 
@@ -972,6 +974,9 @@ class VoiceFx:
         pad = (-n0) % 4
         if pad:
             x = np.concatenate((x, np.zeros(pad)))
+        if self.p.get("dehum"):
+            for b in self.dehum:
+                x = b(x)
         x = self.gate.process(x, n0, float(self.p["gate"]))   # 降噪：先把靜音時的細小雜音壓掉
         y = self.tuner.process(x)
         self.info = (self.tuner.f,

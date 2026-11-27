@@ -247,7 +247,7 @@ struct Engine {
             else if (k == "clarity") p.clarity = v;
             else if (k == "thick") p.thick = v;
             else if (k == "widen") p.widen = v;
-            else if (k == "gate") p.gate = v;
+            else if (k == "gate") p.gate = v; else if (k == "dehum") p.dehum = v > 0.5;
             else if (fx->set_reverb_key(k, v)) return;
             if (sc) fx->tuner.update_scale();
             fx->apply();

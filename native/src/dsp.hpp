@@ -748,6 +748,20 @@ static const ColorBand COLORS[6][5] = {
     {{300, 6, 0.5}, {1200, -4, 2.0}, {4000, 3, 0.8}, {8000, 6, 1.5}, {12000, 5, 0.3}},             // 5 ASMR
 };
 
+// ---------------------------------------------------------------- 去電流聲（低低的「嗡——」）
+// 台灣的電是 60 Hz：嗡聲在 60、120、180、240 Hz。切掉 75 Hz 以下＋在這幾個頻率挖很窄的洞，人聲幾乎不受影響。
+struct DeHum {
+    Biquad hp1, hp2, pk[4];
+    explicit DeHum(double sr = 48000) : hp1(BQ_HP, 75, sr, 0, 0.707), hp2(BQ_HP, 75, sr, 0, 0.707) {
+        for (int i = 0; i < 4; i++) pk[i] = Biquad(BQ_PEAKING, 60.0 * (i + 1), sr, -24.0, 40.0);   // 很窄的洞，不會吃到歌聲
+    }
+    void process(double* y, int n, bool on) {
+        if (!on) return;
+        hp1.run(y, n); hp2.run(y, n);
+        for (auto& b : pk) b.run(y, n);
+    }
+};
+
 // ---------------------------------------------------------------- 降噪（靜音時壓掉細小雜音）
 // 向下擴展器：聲音低於門檻時慢慢壓低，一出聲立刻打開；不看未來的聲音，所以不增加延遲。
 struct NoiseGate {
@@ -785,6 +799,7 @@ struct FxParams {
     bool card = false; double electro_fx = 0; int color = 0; double deess = 0, metal = 0, robot_fx = 0;
     double loud = 0, clarity = 0, thick = 0, widen = 0;   // 人聲質感（預設關閉）
     double gate = 0;                                      // 降噪（預設關閉）
+    bool dehum = false;                                   // 去電流聲
 };
 
 struct VoiceFx {
@@ -809,13 +824,14 @@ struct VoiceFx {
     Doubler doubler;
     Leveler leveler;
     NoiseGate gate;
+    DeHum dehum;
     std::vector<float> side;
     std::vector<float> rv_wet, rv_side;   // 混響的部分（耳機混響用）        // 混響的左右差（只給耳機做立體寬度）
     double ring_ph = 0;
     std::vector<double> t1, t2;
 
     VoiceFx(double s = 48000, double window_ms = 21.0)
-        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), doubler(s), leveler(s), gate(s) {
+        : sr(s), tuner(s, window_ms), electro(s), deesser(s), metal(s), doubler(s), leveler(s), gate(s), dehum(s) {
         clar[0] = Biquad(BQ_PEAKING, 250, s, 0.0, 1.0); clar[1] = Biquad(BQ_PEAKING, 5000, s, 0.0, 1.0); clar[2] = Biquad(BQ_HIGHSHELF, 9000, s, 0.0);
         for (auto& L : layers) L.init(s);
         side.assign(8192, 0.f);
@@ -878,6 +894,7 @@ struct VoiceFx {
         if ((int)t1.size() < n) { t1.resize(n); t2.resize(n); }
         double* y = t1.data();
         for (int i = 0; i < n; i++) y[i] = i < n0 ? io[i] : 0.0;
+        dehum.process(y, n0, p.dehum); // 去電流聲：先把 60 Hz 嗡聲濾掉
         gate.process(y, n0, p.gate);   // 降噪：先把靜音時的細小雜音壓掉
         tuner.process(y, n);
 

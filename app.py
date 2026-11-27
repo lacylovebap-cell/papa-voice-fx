@@ -353,7 +353,8 @@ class App:
         self.reverb_names = list(REVERB_NAMES)
         self.polish = {k: self.var("pol_" + k, 0, D) for k in POLISH}
         self.deess = self.var("deess", 40, D)
-        self.gate = self.var("gate", 0, D)          # 降噪：所有效果（包括無效果）共用，預設 0＝不處理
+        self.gate = self.var("gate", 0, D)
+        self.dehum = self.var("dehum", 1, tk.IntVar)   # 去電流聲（60 Hz 嗡聲），預設開          # 降噪：所有效果（包括無效果）共用，預設 0＝不處理
         # 人聲質感分兩組：「無效果」自己一組；其他效果共用一組。切換時各自記住。
         self.polish_sets_var = self.var("polish_sets", "")
         cur = self._polish_now()
@@ -676,6 +677,9 @@ class App:
             var._fmt = (vl, "{:.0f}%")
         pb = tk.Frame(pol, bg=C_CARD)
         pb.grid(row=0, column=3, columnspan=3, sticky="e")
+        self.btn_dehum = tk.Checkbutton(pb, text="🔌 去電流聲", variable=self.dehum, command=self.apply, bg=C_CARD, fg=C_TXT,
+                                        selectcolor=C_DEEP, activebackground=C_CARD, activeforeground=C_TXT, font=(FONT, 8))
+        self.btn_dehum.pack(side="left", padx=(0, 4))
         self.button(pb, "↺ 歸零", self.reset_polish, size=8).pack(side="left")
         self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
         self.fx_note = self.label(fx, "", 8, C_SUB, anchor="w")
@@ -928,6 +932,7 @@ class App:
         for k in POLISH:
             kw[k] = float(self.polish[k].get()) / 100
         kw["gate"] = float(self.gate.get()) / 100
+        kw["dehum"] = bool(self.dehum.get())
         kw["mon_mode"] = int(self.listen.get())
         for i, r in enumerate(self.rv):
             t = r["type"].get()
