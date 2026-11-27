@@ -25,6 +25,7 @@ a.refresh_scene_bar()
 a.preset("electro")
 a.rv[1]["type"].set("大廳"); a.on_reverb_type(1)
 a.alpha.set(100); a.apply()
+a.swap_style("爵士", "破碎感"); a.swap_style("搖滾", "御姐說唱")
 
 
 def shot(name, win=None):

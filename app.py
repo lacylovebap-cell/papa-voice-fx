@@ -1153,11 +1153,13 @@ class App:
         for w in grid.winfo_children():
             w.destroy()
         self.style_btns = {}
-        for n, name in enumerate(self.style_visible()):
+        vis = self.style_visible()
+        wch = max(4, min(9, 2 * max([len(k) for k in vis] or [2]) + 1))   # 中文字比較寬：照最長的名字放寬，字不會被切掉
+        for n, name in enumerate(vis):
             on = name == getattr(self, "_style_now", None)
             b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_ACCENT if on else C_BTN, fg=C_TXT,
                           activebackground=C_ACCENT, relief="flat", font=(FONT, 8, "bold"), cursor="hand2", bd=0,
-                          width=4, padx=2, pady=1)
+                          width=wch, padx=2, pady=1)
             b.grid(row=n // 5, column=n % 5, padx=1, pady=1)
             b.bind("<Button-3>", lambda e, k=name: self.style_swap_menu(k, e))
             self.style_btns[name] = b
