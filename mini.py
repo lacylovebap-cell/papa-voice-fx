@@ -227,7 +227,7 @@ class MiniWindow:
             ttk.Scale(r, from_=lo, to=hi, variable=var, orient="horizontal", length=P(62),
                       command=lambda _v: a.apply()).pack(side="left", padx=1)
             self._btn(r, "+", lambda v=var, lo=lo, hi=hi: self.nudge(v, +1, lo, hi), w=1).pack(side="left")
-            vl = self._lbl(r, "", width=4, anchor="e")
+            vl = self._lbl(r, "", width=5, anchor="e")      # 放大時「100%」也不會擠到 ＋
             vl.pack(side="left")
             self.vals[name] = (var, vl)
 
