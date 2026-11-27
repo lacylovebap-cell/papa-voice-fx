@@ -1154,7 +1154,7 @@ class App:
             w.destroy()
         self.style_btns = {}
         vis = self.style_visible()
-        wch = max(4, min(9, 2 * max([len(k) for k in vis] or [2]) + 1))   # 中文字比較寬：照最長的名字放寬，字不會被切掉
+        wch = max(4, min(7, int(1.6 * max([len(k) for k in vis] or [2])) + 1))   # 中文字比較寬：照最長的名字放寬，字不會被切掉
         for n, name in enumerate(vis):
             on = name == getattr(self, "_style_now", None)
             b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_ACCENT if on else C_BTN, fg=C_TXT,
