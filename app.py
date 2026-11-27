@@ -869,7 +869,7 @@ class App:
             except Exception:
                 pass
         if hasattr(self, "fx_note"):
-            self.fx_note.config(text=("✋ 無效果：沒有混響（變聲照樣開著）。人聲質感是「無效果」自己的一組，切到別的效果再回來還是這樣。"
+            self.fx_note.config(text=("✋ 無效果：混響 A／B／C 全部是 0（變聲照樣開著）。灰色推桿只是記住有效果時的混響，不會作用。人聲質感是「無效果」自己的一組。"
                                       if dry else "混響和人聲質感：說話、修音、電音等效果共用；無效果另外一組、沒有混響。⚙＝更多細調。"),
                                 fg=C_YELLOW if dry else C_SUB)
 
@@ -889,6 +889,11 @@ class App:
             fm = getattr(v, "_fmt", None)
             if fm:
                 fm[0].config(text=fm[1].format(v.get()))
+        if self.polish_group() == "dry":          # 無效果：混響真的是 0，旁邊的數字也顯示「關」（推桿位置只是記住有效果時的設定）
+            for r in self.rv:
+                fm = getattr(r["mix"], "_fmt", None)
+                if fm:
+                    fm[0].config(text="關")
         # 電音風格換了 → 載入那個風格的旋鈕值
         if self.active_preset == "electro" and self.el_style.get() != self._style_applied:
             self._load_style()
