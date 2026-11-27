@@ -668,15 +668,15 @@ class App:
         self.label(pol, "🎤 人聲質感", 9, C_TXT, True).grid(row=0, column=0, columnspan=3, sticky="w")
         for n, (k, var) in enumerate((("loud", self.polish["loud"]), ("clarity", self.polish["clarity"]),
                                       ("thick", self.polish["thick"]), ("deess", self.deess), ("gate", self.gate))):
-            r, c = 1 + n // 2, (n % 2) * 3
-            self.label(pol, POLISH_NAMES.get(k, "去齒音" if k == "deess" else "🔇 降噪"), 8, C_YELLOW if k == "gate" else C_SUB).grid(row=r, column=c, sticky="e", padx=(0 if c == 0 else 8, 2))
+            r, c = 2 + n, 0          # 疊成一欄（讓出位置給左邊的一鍵按鈕）
+            self.label(pol, POLISH_NAMES.get(k, "去齒音" if k == "deess" else "🔇 降噪"), 8, C_YELLOW if k == "gate" else C_SUB).grid(row=r, column=c, sticky="e", padx=(0, 2))
             ttk.Scale(pol, from_=0, to=100, variable=var, orient="horizontal", length=90,
                       command=lambda _v: self.apply()).grid(row=r, column=c + 1)
             vl = self.label(pol, "", 8, C_SUB, width=4)
             vl.grid(row=r, column=c + 2)
             var._fmt = (vl, "{:.0f}%")
         pb = tk.Frame(pol, bg=C_CARD)
-        pb.grid(row=0, column=3, columnspan=3, sticky="e")
+        pb.grid(row=1, column=0, columnspan=3, sticky="w")
         self.btn_dehum = tk.Checkbutton(pb, text="🔌 去電流聲", variable=self.dehum, command=self.apply, bg=C_CARD, fg=C_TXT,
                                         selectcolor=C_DEEP, activebackground=C_CARD, activeforeground=C_TXT, font=(FONT, 8))
         self.btn_dehum.pack(side="left", padx=(0, 4))
