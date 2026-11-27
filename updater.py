@@ -110,4 +110,21 @@ def launch_swap(new_exe):
     with open(bat, "w", encoding="utf8", newline="") as f:
         f.write(make_script(os.getpid(), new_exe, target))
     flags = 0x08000000                  # CREATE_NO_WINDOW：背景執行，不跳黑色視窗
-    subprocess.Popen(["cmd", "/c", bat], creationflags=flags, close_fds=True)
+    subprocess.Popen(["cmd", "/c", bat], creationflags=flags, close_fds=True, env=clean_env())
+
+
+def clean_env(env=None):
+    """給新版 PAPA 一個乾淨的環境。
+    打包成單一 exe 的程式會在環境變數裡留下自己的暫存資料夾位置（_MEI…）。不清掉的話，
+    新開的 PAPA 會以為自己是舊的那個，跑去舊的暫存資料夾找 python312.dll（已經被刪掉）→
+    跳出「Failed to load Python DLL」。"""
+    env = dict(os.environ if env is None else env)
+    for k in list(env):
+        if k.upper().startswith("_PYI") or k.upper() in ("_MEIPASS2", "_MEIPASS"):
+            del env[k]
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei and "PATH" in env:           # 把舊的暫存資料夾從 PATH 拿掉
+        env["PATH"] = os.pathsep.join(p for p in env["PATH"].split(os.pathsep)
+                                      if p and os.path.normcase(p.rstrip("\\/")) != os.path.normcase(mei.rstrip("\\/")))
+    return env

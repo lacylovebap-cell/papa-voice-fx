@@ -46,6 +46,11 @@ try:
 except RuntimeError:
     ok = False
 check("完整的程式檔：可以換", ok)
+env = updater.clean_env({"_PYI_APPLICATION_HOME_DIR": "C:\\Temp\\_MEI123", "_MEIPASS2": "C:\\Temp\\_MEI123",
+                          "_PYI_PARENT_PROCESS_LEVEL": "1", "PATH": "C:\\Windows", "USERNAME": "papa"})
+check("新版 PAPA 拿到乾淨的環境（不會去舊暫存資料夾找 python312.dll）",
+      not any(k.startswith("_PYI") or k.startswith("_MEI") for k in env) and env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+      and env["USERNAME"] == "papa" and env["PATH"] == "C:\\Windows")
 check("用原始碼跑時不會自動更新", not updater.can_self_update())
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)
