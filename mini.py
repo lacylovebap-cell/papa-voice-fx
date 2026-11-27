@@ -32,6 +32,7 @@ class MiniWindow:
         self.lis_btns = []
         self._resize_job = None
         self._base = None          # 放大 1 倍時的大小（寬, 高）
+        self._sizes_set = []       # 程式自己設過的大小（這些不是「怕怕拉的」，不用重排）
 
     # ---- 等比例放大縮小
     @property
@@ -60,6 +61,8 @@ class MiniWindow:
         if not self.shown or self._base is None:
             return
         w, h = self.win.winfo_width(), self.win.winfo_height()
+        if any(abs(w - a) <= 2 and abs(h - b) <= 2 for a, b in self._sizes_set):
+            return                 # 是程式自己調的大小（或視窗還沒跟上），不是拉邊邊
         bw, bh = self._base
         k0 = self.k
         sw, sh = w / max(1, bw), h / max(1, bh)
@@ -76,6 +79,9 @@ class MiniWindow:
         self.app.mini_scale.set(round(max(MINI_SCALE_MIN, min(MINI_SCALE_MAX, k)), 2))
         if not self.shown:
             return
+        if self._resize_job:
+            self.win.after_cancel(self._resize_job)
+            self._resize_job = None
         for c in self.win.winfo_children():
             if not isinstance(c, tk.Toplevel):
                 c.destroy()
@@ -92,7 +98,9 @@ class MiniWindow:
         w.update_idletasks()
         try:
             m = re.match(r"\d+x\d+([+-]-?\d+[+-]-?\d+)", w.geometry())     # 位置不變（還沒顯示時 winfo_x 會是 0）
-            w.geometry("%dx%d%s" % (w.winfo_reqwidth(), w.winfo_reqheight(), m.group(1) if m else ""))
+            rw, rh = w.winfo_reqwidth(), w.winfo_reqheight()
+            self._sizes_set = [(w.winfo_width(), w.winfo_height()), (rw, rh)]   # 之前的大小（視窗可能還沒跟上）＋新的大小
+            w.geometry("%dx%d%s" % (rw, rh, m.group(1) if m else ""))
         except Exception:
             pass
 
@@ -162,7 +170,7 @@ class MiniWindow:
 
     def _lbl(self, parent, text, **kw):
         A = self.A
-        return tk.Label(parent, text=text, bg=A.C_BG, fg=A.C_SUB, font=self.font(), padx=0, pady=0, **kw)
+        return tk.Label(parent, text=text, bg=A.C_BG, fg=A.C_SUB, font=self.font(), padx=0, pady=0, bd=0, **kw)
 
     def _build(self):
         a, A, w = self.app, self.A, self.win
