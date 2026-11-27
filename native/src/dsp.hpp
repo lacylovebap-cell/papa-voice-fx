@@ -585,7 +585,7 @@ struct Doubler {
 
 // 響度：自動把人聲穩定在好聽的大小，再柔和收頂；沒聲音時不放大底噪
 struct Leveler {
-    double sr, gdb = 0;
+    double sr, gdb = 0, nf = -60;   // nf＝目前的底噪大小（自動追蹤）
     Leveler(double s = 48000) : sr(s) {}
     void process(double* y, int n, double amt) {
         if (amt <= 0.001) {
@@ -596,7 +596,10 @@ struct Leveler {
         for (int i = 0; i < n; i++) e += y[i] * y[i];
         double lvl = 20 * std::log10(std::sqrt(e / n + 1e-12));
         double target = -20.0 + 4.0 * amt, want, tau;
-        if (lvl < -48.0 || amt <= 0.001) { want = 0.0; tau = 0.8; }
+        // 底噪追蹤：比底噪小就立刻跟下去，比底噪大就每秒慢慢升 3 dB（最多到 -42 dB，所以 -32 dB 以上的歌聲一定會被拉上來）
+        if (lvl < nf) nf = lvl; else nf = std::min(-42.0, nf + 3.0 * n / sr);
+        // 比底噪大不到 10 dB＝沒出聲：不放大，慢慢回到 0 dB（以前會把雜音越拉越大）
+        if (lvl < std::max(-48.0, nf + 10.0) || amt <= 0.001) { want = std::min(0.0, gdb); tau = 0.3; }
         else {
             want = std::max(-9.0, std::min(12.0, target - lvl)) * amt;
             tau = want < gdb ? 0.12 : 0.9;

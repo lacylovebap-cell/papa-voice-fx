@@ -346,8 +346,10 @@ struct Engine {
             }
             if (play_pos >= play_buf.size()) playing.store(false);
         } else {
+            // 耳機音量拉超過 100% 只放大人聲；伴奏最多 100%，不然伴奏被放大好幾倍再被限制器硬壓，會爆爆的
+            double g_mon_bg = std::min(g_mon, 1.0);
             for (int i = 0; i < frames; i++)
-                mon[i] = (tmp_y[i] + tmp_bg[i]) * g_mon + tmp_in[i] * g_dry * g_mon;
+                mon[i] = tmp_y[i] * g_mon + tmp_bg[i] * g_mon_bg + tmp_in[i] * g_dry * g_mon;
         }
         if (mon_mode == 2) {   // 手機外放：小喇叭沒有低音、中高音突出
             for (int i = 0; i < frames; i++) {

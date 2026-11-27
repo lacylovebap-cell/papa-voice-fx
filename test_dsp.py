@@ -557,5 +557,16 @@ on = int(np.argmax(np.abs(o1[SR * 2 - 2048:]) > 0.05)); on0 = int(np.argmax(np.a
 check("降噪：一出聲立刻打開（不慢於關閉時 3 ms）", on - on0 <= 144, "差 %d 樣本" % (on - on0))
 check("降噪拉 0：和沒有降噪完全一樣", np.allclose(o0, run_gate(0.0)))
 
+# ---------- 響度：沒出聲時不會把雜音越拉越大（底噪 -44 dB，以前會被拉高到 +12 dB）；C++／Python 都測
+from dsp import Limiter
+def run_loud(x, amt):
+    f = VoiceFx(SR); f.set(comp=0.0, verb=0.0, deess=0.0, loud=amt)
+    return np.concatenate([f.process(x[i:i + 256].astype(np.float32)) for i in range(0, len(x) - 255, 256)])
+noise = rng.standard_normal(SR * 6) * 10 ** (-44 / 20)
+g_late = 20 * np.log10(rms(run_loud(noise, 0.6)[-SR:]) / rms(run_loud(noise, 0.0)[-SR:]))
+check("響度：只有雜音時不會越拉越大（6 秒後多不到 1 dB）", g_late <= 1.0, "%.1f dB" % g_late)
+sing = 10 ** (-30 / 20) * np.sin(2 * np.pi * 300 * np.arange(SR * 3) / SR) * np.sqrt(2) + noise[:SR * 3]
+g_sing = 20 * np.log10(rms(run_loud(sing, 0.6)[-SR:]) / rms(run_loud(sing, 0.0)[-SR:]))
+check("響度：小聲唱歌時照樣會拉上來", g_sing > 3.0, "%.1f dB" % g_sing)
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)

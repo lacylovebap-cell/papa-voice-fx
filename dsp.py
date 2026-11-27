@@ -628,6 +628,7 @@ class Leveler:
     def __init__(self, sr):
         self.sr = sr
         self.gdb = 0.0
+        self.nf = -60.0     # 目前的底噪大小（自動追蹤）
 
     def process(self, y, amt):
         n = len(y)
@@ -638,9 +639,11 @@ class Leveler:
         rms = math.sqrt(float(np.mean(y * y)) + 1e-12)
         lvl = 20 * math.log10(rms)
         target = -20.0 + 4.0 * amt                 # 響度越大，目標越大聲
-        if lvl < -48.0 or amt <= 0.001:            # 沒聲音：慢慢回到 0 dB，不放大底噪
-            want = 0.0 if amt > 0.001 else 0.0
-            tau = 0.8
+        # 底噪追蹤：比底噪小就立刻跟下去，比底噪大就每秒慢慢升 3 dB（最多到 -42 dB，-32 dB 以上的歌聲一定會被拉上來）
+        self.nf = lvl if lvl < self.nf else min(-42.0, self.nf + 3.0 * n / self.sr)
+        if lvl < max(-48.0, self.nf + 10.0) or amt <= 0.001:   # 沒出聲（比底噪大不到 10 dB）：不放大雜音
+            want = min(0.0, self.gdb)
+            tau = 0.3
         else:
             want = max(-9.0, min(12.0, target - lvl)) * amt
             tau = 0.12 if want < self.gdb else 0.9   # 壓下來快、拉上去慢
