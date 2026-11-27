@@ -148,7 +148,7 @@ ONE_CLICK = {
                rv=[("人聲板", 20, dict(size=70, bright=55, pre=20)), ("大廳", 10, dict(size=85, bright=45, pre=35))],
                polish=dict(loud=50, clarity=45, thick=30, widen=60, duck=0)),
 }
-DRY_POLISH = dict(loud=0.0, clarity=0.0, thick=0.0, widen=0.0, duck=0.0, deess=40.0)   # 無效果預設：乾淨、不加料
+DRY_POLISH = dict(loud=0.0, clarity=0.0, thick=0.0, widen=0.0, duck=0.0, deess=0.0)   # 無效果預設：乾淨、什麼都不加（連去齒音也不加）
 ONE_CLICK_SLOTS = 10      # 一鍵區顯示幾個按鈕（其他的在「更多」裡）
 ONE_CLICK_DEFAULT = ["CD", "流行", "甜歌", "抒情", "悲傷", "古風", "說唱", "搖滾", "爵士", "清唱"]
 
@@ -369,6 +369,11 @@ class App:
         if not self.dry_clean_v1.get():
             self.polish_sets["dry"] = dict(DRY_POLISH)
             self.dry_clean_v1.set(1)
+        # 第 58 版：無效果「啥都不要有」→ 無效果那組的去齒音也歸零一次
+        self.dry_clean_v2 = self.var("dry_clean_v2", 0, tk.IntVar)
+        if not self.dry_clean_v2.get():
+            self.polish_sets["dry"]["deess"] = 0.0
+            self.dry_clean_v2.set(1)
         self._polish_group = None       # None＝下次 apply 直接載入目前那組
         self.g_dry = self.var("g_dry", 0, D, remember=False)   # 耳機混原聲：已不需要（變聲延遲很低），固定 0
         self.el_style = self.var("el_style3", "電音")
@@ -929,6 +934,9 @@ class App:
                   phone=bool(g("phone")), phone_dist=g("phone_dist") / 100, machine=bool(g("machine")),
                   eq_lo=g("eq_lo"), eq_mid=g("eq_mid"), eq_hi=g("eq_hi"), comp=g("comp") / 100,
                   card=bool(self.card.get()), electro_fx=g("electro_fx") / 100, deess=float(self.deess.get()) / 100)
+        if self.polish_group() == "dry":
+            kw["comp"] = 0.0             # 無效果：不壓縮、不加 EQ，只剩專屬變聲＋自己設的人聲質感
+            kw["eq_lo"] = kw["eq_mid"] = kw["eq_hi"] = 0.0
         for k in POLISH:
             kw[k] = float(self.polish[k].get()) / 100
         kw["gate"] = float(self.gate.get()) / 100
@@ -1072,7 +1080,7 @@ class App:
         for b in getattr(self, "style_btns", {}).values():      # 一鍵風格屬於「有效果」那組，無效果時不亮
             b.config(bg=C_BTN)
         self.msg.config(text="✋ 無效果：沒有混響、沒有修音／電音，只有變聲＋無效果自己的人聲質感"
-                             + ("（目前都是 0＝乾淨的聲音）。" if all(abs(v) < 1e-6 for k, v in self._polish_now().items() if k != "deess")
+                             + ("（目前都是 0＝乾淨的聲音）。" if all(abs(v) < 1e-6 for k, v in self._polish_now().items())
                                 else "（想完全乾淨，按人聲質感的「↺ 歸零」）。"), fg=C_SUB)
 
     def reset_polish(self):
