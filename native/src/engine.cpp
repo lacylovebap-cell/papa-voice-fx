@@ -108,6 +108,7 @@ struct Engine {
     std::mutex pm;
     std::vector<std::pair<std::string, double>> pending;
     double g_inp = 1, g_mon = 1, g_dry = 0, g_out = 1, g_bgm = 0.8;
+    double g_master = 1;   // 總音量：直播、錄音、耳機一起（三個永遠一樣大）
     bool bgm_on = true;
     double bgm_trim_ms = 0;
     double duck = 0, duck_db = 0;   // 伴奏避讓：唱歌時伴奏自動讓開（最多 6 dB）
@@ -202,6 +203,7 @@ struct Engine {
         else if (k == "g_mon") g_mon = v;
         else if (k == "g_dry") g_dry = v;
         else if (k == "g_out") g_out = v;
+        else if (k == "g_master") g_master = v;
         else if (k == "g_bgm") g_bgm = v;
         else if (k == "bgm_on") bgm_on = v > 0.5;
         else if (k == "bgm_trim_ms") bgm_trim_ms = v;
@@ -337,7 +339,7 @@ struct Engine {
         }
         // 直播輸出
         double* om = d_om.data();
-        for (int i = 0; i < frames; i++) om[i] = tmp_y[i] * g_out + bg_mix[i];
+        for (int i = 0; i < frames; i++) om[i] = (tmp_y[i] * g_out + bg_mix[i]) * g_master;
         lim_out.process(om, frames);
         float pk_out = 0;
         for (int i = 0; i < frames; i++) { tmp_out[i] = (float)om[i]; pk_out = std::max(pk_out, std::fabs(tmp_out[i])); }
@@ -350,7 +352,7 @@ struct Engine {
             size_t k = std::min((size_t)frames, rec_max - std::min(rec_max, n0));
             for (size_t i = 0; i < k; i++) {
                 rec_wet[n0 + i] = tmp_out[i]; rec_dry[n0 + i] = tmp_in[i];
-                rec_voice[n0 + i] = (float)(tmp_y[i] * g_out); rec_bgm[n0 + i] = (float)bg_mix[i];
+                rec_voice[n0 + i] = (float)(tmp_y[i] * g_out * g_master); rec_bgm[n0 + i] = (float)(bg_mix[i] * g_master);
             }
             rec_n.store(n0 + k);
         }
@@ -358,15 +360,18 @@ struct Engine {
         // 耳機
         double* mon = d_mon.data();
         if (playing.load()) {
+            // 回放＝存檔的聲音（耳機音量最多 100%，不會比存出來的檔案大聲）
+            double g_play = std::min(g_mon, 1.0);
             for (int i = 0; i < frames; i++) {
-                mon[i] = play_pos < play_buf.size() ? play_buf[play_pos] * g_mon : 0.0;
+                mon[i] = play_pos < play_buf.size() ? play_buf[play_pos] * g_play : 0.0;
                 play_pos++;
             }
             if (play_pos >= play_buf.size()) playing.store(false);
         } else {
-            // 耳機聽到的人聲／伴奏比例＝直播（錄音）的比例；耳機音量只是整體大小
+            // 耳機＝和直播／錄音完全一樣的混音（一樣的人聲、伴奏、總音量），耳機音量只能調小
+            double gm = std::min(g_mon, 1.0);
             for (int i = 0; i < frames; i++)
-                mon[i] = (tmp_y[i] * g_out + tmp_bg[i]) * g_mon + tmp_in[i] * g_dry * g_mon;
+                mon[i] = (tmp_y[i] * g_out + tmp_bg[i]) * g_master * gm + tmp_in[i] * g_dry * gm;
         }
         if (mon_mode == 2) {   // 手機外放：小喇叭沒有低音、中高音突出
             for (int i = 0; i < frames; i++) {
@@ -382,7 +387,7 @@ struct Engine {
         for (int i = 0; i < frames; i++) {
             float v = (float)mon[i];
             pk_mon = std::max(pk_mon, std::fabs(v));
-            float w = use_side ? (float)(sd[i] * g_out * g_mon) : 0.f;   // 混響左右寬度（只有耳機聽得到）
+            float w = use_side ? (float)(sd[i] * g_out * g_master * std::min(g_mon, 1.0)) : 0.f;   // 混響左右寬度（只有耳機聽得到）
             out_stereo[2 * i] = std::max(-1.f, std::min(1.f, v + w));
             out_stereo[2 * i + 1] = std::max(-1.f, std::min(1.f, v - w));
         }

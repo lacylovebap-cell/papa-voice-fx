@@ -100,6 +100,12 @@ for r, w in ((128, 128), (128, 480), (480, 480), (480, 128), (512, 480)):
     check("伴奏不斷：耳機每次 %d、伴奏每次 %d" % (r, w), n_new == 0, "斷 %d 次" % n_new)
 check("舊的固定緩衝在 Realtek 情況會斷（測試有效）", ne.LIB.papa_test_bgm_sim(128, 480, 480, 80.0, 30.0, 0) > 0)
 check("伴奏斷掉次數讀得到", e.bgm_underruns >= 0 and e.bgm_buffer_ms > 0, "%.1f ms" % e.bgm_buffer_ms)
+# 唱歌當下（耳機）、存檔（直播混音）一樣大：總音量一起變、耳機拉超過 100% 也不會比存檔大聲
+ne.LIB.papa_set(b"g_master", 2.0); ne.LIB.papa_set(b"g_mon", 4.0); ne.LIB.papa_set(b"g_out", 0.5)
+time.sleep(0.6); e._cache = None
+lm, lo = e.lv["mon"], e.lv["out"]
+check("耳機和直播／錄音一樣大（差不到 1 dB）", lo > 0.05 and abs(20 * np.log10(lm / lo)) < 1.0, "耳機 %.3f 直播 %.3f" % (lm, lo))
+ne.LIB.papa_set(b"g_master", 1.0); ne.LIB.papa_set(b"g_mon", 1.0); ne.LIB.papa_set(b"g_out", 1.0)
 # 麥克風和耳機在不同聲卡：耳機改成各自對時（不會一陣一陣啵啵）
 ne.LIB.papa_set(b"force_sep", 1.0)
 e.stop()

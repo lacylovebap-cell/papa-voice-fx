@@ -203,7 +203,7 @@ class Engine:
         self.streams = []
         self.running = False
         self.params = {}
-        self.gains = dict(inp=1.0, mon=1.0, dry=0.0, out=1.0, bgm=0.8)
+        self.gains = dict(inp=1.0, mon=1.0, dry=0.0, out=1.0, bgm=0.8, master=1.0)
         self.backing = None
         self.bgm_ring = None
         self.bgm_fifo = np.zeros(0)
@@ -363,12 +363,13 @@ class Engine:
                 self.duck_db = float(nw)
                 bg_mix = bg_mix * g
                 bg_mon = bg_mon * g
-            out_mix = self.lim_out.process(y * self.gains["out"] + bg_mix)
+            gma = self.gains.get("master", 1.0)     # 總音量：直播、錄音、耳機一起
+            out_mix = self.lim_out.process((y * self.gains["out"] + bg_mix) * gma)
             if self.recording and self.rec_samples < self.rec_max:
                 self.rec_wet.append(out_mix.astype(np.float32))
                 self.rec_dry.append(dry.copy())
-                self.rec_voice.append((y * self.gains["out"]).astype(np.float32))
-                self.rec_bgm.append((np.zeros(len(y)) + bg_mix).astype(np.float32))
+                self.rec_voice.append((y * self.gains["out"] * gma).astype(np.float32))
+                self.rec_bgm.append(((np.zeros(len(y)) + bg_mix) * gma).astype(np.float32))
                 self.rec_samples += len(y)
             pd = self.play_data
             if pd is not None:
@@ -376,13 +377,13 @@ class Engine:
                 chunk = pd[self.play_pos:self.play_pos + len(y)]
                 self.play_pos += len(y)
                 mon = np.zeros(len(y), np.float32)
-                mon[:len(chunk)] = chunk * self.gains["mon"]
+                mon[:len(chunk)] = chunk * min(self.gains["mon"], 1.0)   # 回放＝存檔的聲音，不會比檔案大聲
                 if self.play_pos >= len(pd):
                     self.play_data = None
             else:
                 # 耳機聽到的人聲／伴奏比例＝直播（錄音）的比例；耳機音量只是整體大小
-                gm = self.gains["mon"]
-                mon = self.lim_mon.process((y * self.gains["out"] + bg_mon) * gm + dry * (self.gains["dry"] * gm))
+                gm = min(self.gains["mon"], 1.0)      # 耳機＝和直播／錄音一樣的混音，耳機音量只能調小
+                mon = self.lim_mon.process((y * self.gains["out"] + bg_mon) * gma * gm + dry * (self.gains["dry"] * gm))
                 if int(self.params.get("mon_mode", 0)) == 2:     # 試聽：手機外放
                     if getattr(self, "_phone_sim", None) is None:
                         from dsp import Biquad

@@ -247,8 +247,9 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.tick()
         self._update_info = None
+        self._mon_warned = False
         if self._mon_migrated:
-            self.msg.config(text="🎧 新版：耳機聽到的人聲和伴奏比例改成跟直播／錄音一樣。耳機音量先調回 100%，太小聲請調大 Windows 音量或耳機旋鈕。",
+            self.msg.config(text="🎧 新版：唱歌當下、回放、存檔三個一樣大聲了。耳機先調回 100%；想全部一起大聲就拉「🔊 總音量」，只是耳機太小聲請調 Windows 音量或耳機旋鈕。",
                             fg=C_YELLOW)
         self.root.after(4000, lambda: self.check_update(silent=True))   # 打開後自動看一次有沒有新版
 
@@ -290,13 +291,15 @@ class App:
         self.g_in, self.g_mon = self.var("g_in", 100, D), self.var("g_mon", 100, D)
         # 第 38 版起：耳機聽到的人聲／伴奏比例＝直播（錄音）的比例（以前耳機音量只放大人聲）。
         # 舊設定的耳機音量會讓人聲突然大很多，所以換版時先調回 100%。
-        self.mon_mix_v2 = self.var("mon_mix_v2", 0, tk.IntVar)
+        # 第 44 版起：直播、錄音、耳機三個永遠一樣大。要一起變大聲用「總音量」；耳機只能調小（最多 100%）。
+        self.g_master = self.var("g_master", 100, D)
+        self.mon_mix_v3 = self.var("mon_mix_v3", 0, tk.IntVar)
         self._mon_migrated = False
-        if not self.mon_mix_v2.get():
+        if not self.mon_mix_v3.get():
             if float(self.g_mon.get()) > 100:
                 self.g_mon.set(100)
                 self._mon_migrated = True
-            self.mon_mix_v2.set(1)
+            self.mon_mix_v3.set(1)
         self.g_out, self.g_bgm = self.var("g_out", 100, D), self.var("g_bgm", 80, D)
         self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
         # 專屬模式：開機自動開「變聲」並防誤關（怕怕專用）。舊版使用者（已有設定檔）自動沿用專屬模式。
@@ -481,7 +484,7 @@ class App:
         box.pack(fill="x")
         self.label(box, "聲音管道", 10, C_ACCENT, True).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 4))
         self.cb_in = self._row(box, 1, "🎙 麥克風", self.dev_in, self.g_in, 200, C_CYAN, "inp")
-        self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 400, C_GREEN, "mon")   # 最大 400%（約 +12 dB，有限制器不會破音）
+        self.cb_mon = self._row(box, 2, "🎧 耳機", self.dev_mon, self.g_mon, 100, C_GREEN, "mon")   # 耳機只能調小：聽到的＝錄到的
         self.cb_out = self._row(box, 3, "📡 直播", self.dev_out, self.g_out, 150, C_PINK, "out")
         self.cb_bgm = self._row(box, 4, "🎵 伴奏", self.dev_bgm, self.g_bgm, 150, C_YELLOW, "bgm")
         bgmrow = tk.Frame(box, bg=C_CARD)
@@ -505,6 +508,17 @@ class App:
         self.polish["duck"]._fmt = (vl, "{:.0f}%")
         self.label(box, "對齊：錄一段邊聽邊拉，人聲比伴奏慢＝往右、快＝往左。避讓：唱歌時伴奏自動讓開一點，人聲更貼合。",
                    8, C_SUB, anchor="w").grid(row=6, column=1, columnspan=4, sticky="w", pady=(2, 0))
+        # 總音量：直播、錄音、耳機一起（三個永遠一樣大）
+        mr = tk.Frame(box, bg=C_CARD)
+        mr.grid(row=8, column=1, columnspan=4, sticky="w", pady=(6, 0))
+        self.label(mr, "🔊 總音量", 9, C_YELLOW, True).pack(side="left")
+        ttk.Scale(mr, from_=50, to=300, variable=self.g_master, orient="horizontal", length=160,
+                  command=lambda v: self.apply()).pack(side="left", padx=(6, 2))
+        vl = self.label(mr, "", 8, C_SUB, width=5)
+        vl.pack(side="left")
+        self.g_master._fmt = (vl, "{:.0f}%")
+        self.button(mr, "↺", lambda: (self.g_master.set(100), self.apply()), size=8).pack(side="left", padx=(0, 8))
+        self.label(mr, "唱歌當下、回放、存檔三個一起變大／變小（永遠一樣大）。耳機那條只能調小。", 8, C_SUB).pack(side="left")
         # 試聽：用耳機聽聽看觀眾那邊的樣子（只改耳機，直播不受影響）
         ls = tk.Frame(box, bg=C_CARD)
         ls.grid(row=7, column=1, columnspan=4, sticky="w", pady=(6, 0))
@@ -828,6 +842,16 @@ class App:
 
     def apply(self):
         self._sync_polish_group()
+        try:
+            hi = float(self.g_master.get()) > 200
+        except Exception:
+            hi = False
+        if hi and not getattr(self, "_mon_warned", True) and hasattr(self, "msg"):
+            self._mon_warned = True
+            self.msg.config(text="🔊 總音量超過 200%：大聲的地方會被壓住，伴奏大聲時可能有點爆。只是自己聽太小聲，請調 Windows 音量或耳機旋鈕。",
+                            fg=C_YELLOW)
+        elif not hi:
+            self._mon_warned = False
         for v in self.vars.values():
             fm = getattr(v, "_fmt", None)
             if fm:
@@ -859,7 +883,8 @@ class App:
             kw[n + "width"] = float(r["width"].get()) / 100
             kw[n + "lowcut"] = float(r["lowcut"].get())
         self.eng.set_params(**kw)
-        for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm)):
+        for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm),
+                        ("master", self.g_master)):
             self.eng.set_gain(name, float(v.get()) / 100)
         self.eng.bgm_on = bool(self.bgm_on.get())
         self.eng.bgm_trim_ms = float(self.bgm_trim.get())
