@@ -107,6 +107,34 @@ POLISH = ("loud", "clarity", "thick", "widen", "duck")
 POLISH_NAMES = {"loud": "響度", "clarity": "清晰度", "thick": "厚度", "widen": "加寬（耳機）", "duck": "伴奏避讓"}
 CD_TEMPLATE = dict(loud=50, clarity=40, thick=25, widen=60, duck=30)
 
+# 一鍵專區：只動混響 A／B／C 和人聲質感（效果、變聲都不動）。
+# 混響每層：(類型, 深度%, 其他要改的旋鈕)；沒寫的旋鈕用那個類型的建議值。B／C 沒寫＝關掉。
+ONE_CLICK = {
+    "✨ CD 質感": dict(desc="暗而柔的板式混響＋加寬＋響度，像唱片裡的人聲",
+                     rv=[("CD 絲滑板式", 25, {})], polish=CD_TEMPLATE),
+    "🎵 流行": dict(desc="明亮的人聲板＋一點房間感，人聲清楚靠前",
+                  rv=[("人聲板", 22, dict(size=60, bright=65, pre=20, lowcut=200)), ("房間", 8, {})],
+                  polish=dict(loud=55, clarity=50, thick=25, widen=50, duck=35)),
+    "💗 抒情": dict(desc="柔順的長殘響＋大廳尾巴，溫暖飽滿",
+                  rv=[("CD 絲滑板式", 28, dict(size=80, bright=35, pre=30)), ("大廳", 12, dict(size=90, bright=40, pre=45, lowcut=150))],
+                  polish=dict(loud=45, clarity=35, thick=35, widen=60, duck=30)),
+    "💧 悲傷": dict(desc="偏暗、很長的大廳殘響，聲音比較沉、比較遠",
+                  rv=[("大廳", 30, dict(size=95, bright=30, pre=35, lowcut=120)), ("CD 絲滑板式", 15, {})],
+                  polish=dict(loud=40, clarity=25, thick=40, widen=65, duck=30)),
+    "🏮 古風": dict(desc="空靈的大廳＋板式混響、預延遲長一點，有山谷迴盪的感覺",
+                  rv=[("大廳", 30, dict(size=85, bright=50, pre=40, lowcut=200)), ("CD 絲滑板式", 15, {}), ("教堂", 8, dict(lowcut=300))],
+                  polish=dict(loud=45, clarity=50, thick=20, widen=70, duck=25)),
+    "🎤 說唱": dict(desc="幾乎不加混響，人聲乾淨、大聲、貼耳朵",
+                  rv=[("房間", 10, dict(size=40, bright=55, pre=0, lowcut=300))],
+                  polish=dict(loud=70, clarity=55, thick=35, widen=20, duck=45)),
+    "🎸 搖滾": dict(desc="短房間＋人聲板，聲音有力、比較亮",
+                  rv=[("房間", 15, dict(bright=70)), ("人聲板", 10, dict(size=50, bright=70))],
+                  polish=dict(loud=70, clarity=60, thick=40, widen=30, duck=40)),
+    "🎙 清唱": dict(desc="沒有伴奏時用：混響多一點，把空間補起來",
+                  rv=[("人聲板", 25, dict(size=70, bright=55, pre=20)), ("大廳", 15, dict(size=85, bright=45, pre=35))],
+                  polish=dict(loud=50, clarity=45, thick=30, widen=60, duck=0)),
+}
+
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
 
 ① 在 Windows 搜尋「音量混音程式」並打開
@@ -556,8 +584,31 @@ class App:
             var._fmt = (vl, "{:.0f}%")
         pb = tk.Frame(pol, bg=C_CARD)
         pb.grid(row=0, column=3, columnspan=3, sticky="e")
-        self.button(pb, "✨ 一鍵 CD 質感", self.apply_cd_template, color="#2c4a63", size=8).pack(side="left")
         self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
+        # ---- 一鍵專區：不會調混響也沒關係，按一下就好
+        oc = tk.Frame(fx, bg=C_CARD)
+        oc.pack(fill="x", pady=(8, 0))
+        hd = tk.Frame(oc, bg=C_CARD)
+        hd.pack(fill="x")
+        self.label(hd, "⚡ 一鍵專區", 9, C_YELLOW, True).pack(side="left")
+        self.label(hd, "按一下＝換成那種歌的混響＋人聲質感（效果、變聲不動）", 8, C_SUB).pack(side="left", padx=(8, 0))
+        self.btn_style_undo = self.button(hd, "↶ 復原", self.undo_style, size=8)
+        self.btn_style_undo.pack(side="right")
+        self.btn_style_undo.config(state="disabled")
+        grid = tk.Frame(oc, bg=C_CARD)
+        grid.pack(fill="x", pady=(4, 0))
+        self.style_btns = {}
+        for n, name in enumerate(ONE_CLICK):
+            b = self.button(grid, name, lambda k=name: self.apply_style(k), size=9)
+            b.config(pady=3)
+            b.grid(row=n // 4, column=n % 4, sticky="ew", padx=2, pady=2)
+            self.style_btns[name] = b
+        for c in range(4):
+            grid.columnconfigure(c, weight=1)
+        self.style_note = self.label(oc, "", 8, C_SUB, anchor="w")
+        self.style_note.pack(fill="x")
+        self._style_before = None
+        self._style_now = None
         self.fx_note = self.label(fx, "", 8, C_SUB, anchor="w")
         self.fx_note.pack(fill="x", pady=(4, 0))
         self.label(fx, "🔇 降噪：沒出聲時把細細沙沙的小雜音壓掉（0＝不處理，越右壓越多；出聲時不影響、不增加延遲）。所有效果共用。",
@@ -978,25 +1029,67 @@ class App:
 
     # ---- 一鍵 CD 質感（參考 Studio One 混音教學：暗而柔的板式混響＋加寬＋響度）
     def apply_cd_template(self, ask=True):
-        if ask and not messagebox.askyesno(
-                "一鍵 CD 質感",
-                "會把混響 A 換成「CD 絲滑板式」（深度 25%）、混響 B／C 歸零，\n"
-                "並打開響度、清晰度、厚度、加寬、伴奏避讓。\n\n效果和變聲都不會動。要套用嗎？\n"
-                "（建議先按「＋ 存目前設定」把現在的設定存起來）"):
-            return
-        r = self.rv[0]
-        r["type"].set("CD 絲滑板式")
-        for k, v in self.reverb_type_defaults("CD 絲滑板式").items():
-            r[k].set(round(v, 1))
-        r["mix"].set(25)
-        for rr in self.rv[1:]:
-            rr["mix"].set(0)
-        for k, v in CD_TEMPLATE.items():
-            self.polish[k].set(v)
+        self.apply_style("✨ CD 質感")
+
+    # ---- 一鍵專區
+    def _style_snapshot(self):
+        sets = json.loads(json.dumps(self.polish_sets))
+        sets[self.polish_group()] = self._polish_now()
+        return dict(rv=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv], sets=sets)
+
+    def _style_restore(self, snap):
+        for r, d in zip(self.rv, snap["rv"]):
+            for k, v in d.items():
+                r[k].set(v)
+        self.polish_sets = json.loads(json.dumps(snap["sets"]))
+        self._polish_load(self.polish_sets[self.polish_group()])
+
+    def apply_style(self, name):
+        """一鍵套用某種歌的混響＋人聲質感（只動這兩樣；按「↶ 復原」可以回到按之前）。"""
+        st = ONE_CLICK[name]
+        if self._style_now is None:           # 連按好幾個風格時，復原回到「第一次按之前」
+            self._style_before = self._style_snapshot()
+        layers = list(st["rv"]) + [None] * (len(self.rv) - len(st["rv"]))
+        for r, lay in zip(self.rv, layers):
+            if lay is None:
+                r["mix"].set(0)
+                continue
+            t, mix, over = lay
+            r["type"].set(t)
+            for k, v in self.reverb_type_defaults(t).items():
+                r[k].set(round(v, 1))
+            for k, v in over.items():
+                r[k].set(v)
+            r["mix"].set(mix)
+        if self.polish_group() == "dry":      # 無效果：不動無效果自己那組，記到效果那組（按說話、修音時用）
+            self.polish_sets["fx"].update({k: float(v) for k, v in st["polish"].items()})
+        else:
+            for k, v in st["polish"].items():
+                self.polish[k].set(v)
+        self._style_now = name
         self.apply()
+        for k, b in self.style_btns.items():
+            b.config(bg=C_ACCENT if k == name else C_BTN)
+        self.btn_style_undo.config(state="normal")
+        tip = "已套用「%s」：%s。喜歡的話按最上面「＋ 存目前設定」存起來。" % (name.split(" ", 1)[-1], st["desc"])
+        if self.active_preset is None:
+            tip += "（現在是無效果＝沒有混響，按說話或自然修音才聽得到混響）"
+        self.style_note.config(text=tip, fg=C_YELLOW if self.active_preset is None else C_SUB)
         if hasattr(self, "mixer") and self.mixer.editing and self.mixer.editing[0] in ("rv", "polish"):
             self.mixer.open_editor(*self.mixer.editing)
-        self.msg.config(text="已套用 CD 質感。喜歡的話按最上面「＋ 存目前設定」存起來。", fg=C_SUB)
+
+    def undo_style(self):
+        if self._style_before is None:
+            return
+        self._style_restore(self._style_before)
+        self._style_before = self._style_now = None
+        self.apply()
+        for b in self.style_btns.values():
+            b.config(bg=C_BTN)
+        self.btn_style_undo.config(state="disabled")
+        self.style_note.config(text="已復原成按一鍵之前的混響和人聲質感。", fg=C_SUB)
+        if hasattr(self, "mixer") and self.mixer.editing and self.mixer.editing[0] in ("rv", "polish"):
+            self.mixer.open_editor(*self.mixer.editing)
 
     # ---- 我的設定（自己取名字的存檔）
     def scene_snapshot(self):
