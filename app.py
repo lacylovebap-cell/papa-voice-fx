@@ -49,7 +49,7 @@ AT_REFS = {
     "電鰻（0／0／0）": (0, 0, 0, 0),
 }
 # 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
-NATURAL = (120, 20, 100)     # 修正速度 120 ms（慢一點比較自然）、Flex、Humanize
+NATURAL = (80, 20, 80)       # 修正速度 80 ms、Flex、Humanize（第 77 版：怕怕要力度強一點，參考 Auto-Tune 自然修音 80／30／80）
 
 # 效果的所有參數（都能在混音台用旋鈕細調）
 FX_BASE = dict(mode="off", phone=0, machine=0, robot_fx=0, electro_fx=0, strength=100, retune=0, flex=0, humanize=0, tol=0,
@@ -64,8 +64,8 @@ def _style_vals(st):
 
 PRESETS = {
     "talk": {**FX_BASE, "comp": 45, "eq_mid": 2, "eq_hi": 2},
-    # 非常自然的修音：只修 70%、差 20 音分以內不修、修正慢一點 → 不會有電音感
-    "sing": {**FX_BASE, "mode": "natural", "retune": NATURAL[0], "flex": NATURAL[1], "humanize": NATURAL[2], "strength": 70, "tol": 20,
+    # 自然修音：修 90%、差 10 音分以內不修、80 ms 拉回 → 走音會被拉回來，但不會有電音那種「卡在音上」
+    "sing": {**FX_BASE, "mode": "natural", "retune": NATURAL[0], "flex": NATURAL[1], "humanize": NATURAL[2], "strength": 90, "tol": 10,
              "eq_lo": 1, "eq_mid": 1, "eq_hi": 2},
     "electro": {**FX_BASE, "mode": "electro", "comp": 50, "eq_mid": 1, "eq_hi": 2, **_style_vals("電音")},
     "phone": {**FX_BASE, "phone": 1, "comp": 60},
@@ -402,6 +402,13 @@ class App:
             self.fx_tweaks = json.loads(self.fx_tweaks_var.get()) or {}
         except Exception:
             self.fx_tweaks = {}
+        # 第 77 版：自然修音力度加強 → 以前自己轉過的「修正強度／容許誤差／修正速度／Humanize」回到新預設一次
+        self.sing_strong_v1 = self.var("sing_strong_v1", 0, tk.IntVar)
+        if not self.sing_strong_v1.get():
+            for k in ("strength", "tol", "retune", "humanize"):
+                self.fx_tweaks.get("sing", {}).pop(k, None)
+            self.sing_strong_v1.set(1)
+            self.fx_tweaks_var.set(json.dumps(self.fx_tweaks, ensure_ascii=False))
         # 我的設定（自己取名字的存檔）
         self.scenes_var = self.var("scenes", "{}")
         try:
