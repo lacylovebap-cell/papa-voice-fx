@@ -270,6 +270,11 @@ if a.active_preset != "talk":
     a.preset("talk")
 a.rv[0]["type"].set("大廳"); a.rv[0]["mix"].set(40); a.g_rvall.set(50); a.apply()
 check("整體混響 50%：混響 A 40% 變成 20%（不改原本的設定）", abs(fx.params["rv1_mix"] - 0.2) < 1e-6 and float(a.rv[0]["mix"].get()) == 40)
+a.rv[1]["type"].set("人聲板"); a.rv[1]["mix"].set(80); a.g_rvall.set(200); a.apply()
+check("整體混響 200%：A 40→80%、B 80→160%，兩層比例不變（不會卡在 100%）",
+      abs(fx.params["rv1_mix"] - 0.8) < 1e-6 and abs(fx.params["rv2_mix"] - 1.6) < 1e-6 and float(a.rv[1]["mix"].get()) == 80)
+check("整體混響不是 100% 時，旁邊顯示實際數值", a.rv[1]["mix"]._fmt[0].cget("text") == "80→160%", a.rv[1]["mix"]._fmt[0].cget("text"))
+a.rv[1]["mix"].set(0)
 a.g_rvall.set(100); a.apply()
 a.mini.show(); root.update()
 check("按縮小：出現縮小版、完整版收起來", a.mini.shown and root.state() == "withdrawn")

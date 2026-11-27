@@ -962,7 +962,8 @@ class App:
             t = r["type"].get()
             n = "rv%d_" % (i + 1)
             kw[n + "type"] = (REVERB_NAMES.index(t) + 1) if t in REVERB_NAMES else 0
-            kw[n + "mix"] = (min(1.0, float(r["mix"].get()) / 100 * float(self.g_rvall.get()) / 100)   # 整體混響：三層一起放大縮小
+            # 整體混響：三層照「各自的設定」一起按比例放大縮小（不設上限，比例永遠不變）
+            kw[n + "mix"] = (float(r["mix"].get()) / 100 * float(self.g_rvall.get()) / 100
                              if (t in REVERB_NAMES and self.polish_group() == "fx") else 0.0)   # 無效果：完全沒有混響
             kw[n + "size"] = float(r["size"].get()) / 100
             kw[n + "bright"] = float(r["bright"].get()) / 100
@@ -970,6 +971,12 @@ class App:
             kw[n + "width"] = float(r["width"].get()) / 100
             kw[n + "lowcut"] = float(r["lowcut"].get())
         self.eng.set_params(**kw)
+        # 整體混響不是 100% 時，A／B／C 旁邊顯示「自己的設定 → 實際」
+        ga = float(self.g_rvall.get())
+        for r in self.rv:
+            fm = getattr(r["mix"], "_fmt", None)
+            if fm and abs(ga - 100) > 0.5 and r["type"].get() in REVERB_NAMES and self.polish_group() == "fx":
+                fm[0].config(text="%.0f→%.0f%%" % (float(r["mix"].get()), float(r["mix"].get()) * ga / 100))
         for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm),
                         ("master", self.g_master), ("monbgm", self.g_monbgm), ("monrv", self.g_monrv)):
             self.eng.set_gain(name, float(v.get()) / 100)
