@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
 import updater
+from mini import MiniWindow
 
 import os as _os
 try:
@@ -305,7 +306,11 @@ class App:
         self.g_master = self.var("g_master", 100, D)
         self.g_monbgm = self.var("g_monbgm", 100, D)    # 只有耳機裡的伴奏（抓節拍用），直播和錄音不變
         self.g_monrv = self.var("g_monrv", 100, D)
-        self.oc_visible_var = self.var("oneclick_visible", "")          # 一鍵區要顯示哪些按鈕      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
+        self.oc_visible_var = self.var("oneclick_visible", "")          # 一鍵區要顯示哪些按鈕
+        self.g_rvall = self.var("g_rvall", 100, D)          # 整體混響：A／B／C 一起按比例放大縮小（100%＝原樣）
+        self.mini_pin = self.var("mini_pin", 1, tk.IntVar)   # 縮小版置頂（永遠在最上面）
+        self.mini_geo = self.var("mini_geo", "")             # 縮小版上次的位置
+        self.mini_oc_var = self.var("mini_oneclick", "")     # 縮小版自己的 5 個一鍵      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
         self.mon_mix_v3 = self.var("mon_mix_v3", 0, tk.IntVar)
         self._mon_migrated = False
         if not self.mon_mix_v3.get():
@@ -479,6 +484,9 @@ class App:
         self.btn_start.pack(side="left", fill="y")
         self.btn_card = self.button(top, "", self.toggle_card, size=10, width=16)
         self.btn_card.pack(side="left", padx=8, fill="y")
+        self.mini = MiniWindow(self)
+        self.btn_mini = self.button(top, "⤡ 縮小", self.mini.show, size=9)
+        self.btn_mini.pack(side="right", fill="y")
         sp = tk.Frame(top, bg=C_DEEP, padx=10, pady=4, highlightthickness=1, highlightbackground=C_LINE)
         sp.pack(side="left", fill="y")
         r1 = tk.Frame(sp, bg=C_DEEP)
@@ -624,9 +632,20 @@ class App:
             gb = self.button(fixed, "⚙", lambda k=i: self.open_mixer("rv", k), size=8)
             gb.grid(row=i, column=4, padx=2)
             self.rv_widgets += [cb, sc, gb]
+        # 整體混響：A／B／C 一起按比例放大縮小（不改三層各自的設定）
+        self.label(fixed, "🌫 整體混響", 9, C_TXT, True).grid(row=3, column=0, sticky="w", pady=1)
+        self.label(fixed, "三層一起放大縮小", 8, C_SUB).grid(row=3, column=1, sticky="w", padx=6)
+        sc = ttk.Scale(fixed, from_=0, to=200, variable=self.g_rvall, orient="horizontal", length=150, command=lambda _v: self.apply())
+        sc.grid(row=3, column=2, padx=4)
+        vl = self.label(fixed, "", 8, C_SUB, width=5)
+        vl.grid(row=3, column=3)
+        self.g_rvall._fmt = (vl, "{:.0f}%")
+        gb = self.button(fixed, "↺", lambda: (self.g_rvall.set(100), self.apply()), size=8)
+        gb.grid(row=3, column=4, padx=2)
+        self.rv_widgets += [sc, gb]
         # ---- 一鍵（混響和人聲質感中間）：小按鈕，按一下換成那種歌的混響＋人聲質感
         oc = tk.Frame(fixed, bg=C_CARD)
-        oc.grid(row=0, column=5, rowspan=3, sticky="n", padx=(14, 6))
+        oc.grid(row=0, column=5, rowspan=4, sticky="n", padx=(14, 6))
         hd = tk.Frame(oc, bg=C_CARD)
         hd.pack(fill="x")
         self.label(hd, "⚡ 一鍵", 9, C_YELLOW, True).pack(side="left")
@@ -644,7 +663,7 @@ class App:
         self._build_style_grid()
         fixed.columnconfigure(5, weight=1)
         pol = tk.Frame(fixed, bg=C_CARD)
-        pol.grid(row=0, column=6, rowspan=3, sticky="ne", padx=(6, 0))
+        pol.grid(row=0, column=6, rowspan=4, sticky="ne", padx=(6, 0))
         self.label(pol, "🎤 人聲質感", 9, C_TXT, True).grid(row=0, column=0, columnspan=3, sticky="w")
         for n, (k, var) in enumerate((("loud", self.polish["loud"]), ("clarity", self.polish["clarity"]),
                                       ("thick", self.polish["thick"]), ("deess", self.deess), ("gate", self.gate))):
@@ -914,7 +933,8 @@ class App:
             t = r["type"].get()
             n = "rv%d_" % (i + 1)
             kw[n + "type"] = (REVERB_NAMES.index(t) + 1) if t in REVERB_NAMES else 0
-            kw[n + "mix"] = float(r["mix"].get()) / 100 if (t in REVERB_NAMES and self.polish_group() == "fx") else 0.0   # 無效果：完全沒有混響
+            kw[n + "mix"] = (min(1.0, float(r["mix"].get()) / 100 * float(self.g_rvall.get()) / 100)   # 整體混響：三層一起放大縮小
+                             if (t in REVERB_NAMES and self.polish_group() == "fx") else 0.0)   # 無效果：完全沒有混響
             kw[n + "size"] = float(r["size"].get()) / 100
             kw[n + "bright"] = float(r["bright"].get()) / 100
             kw[n + "pre"] = float(r["pre"].get())
@@ -1637,6 +1657,10 @@ class App:
         run = e.running
         for k in ("inp", "mon", "out", "bgm"):
             getattr(self, "wave_" + k).push(e.lv[k] if run else 0.0)
+        try:
+            self.mini.refresh()
+        except Exception:
+            pass
 
         import time as _t
         slow = _t.monotonic() - getattr(self, "_st_t", 0) > 0.25      # 音名每 0.25 秒更新一次，不會一直閃
@@ -1775,6 +1799,8 @@ class App:
 
     def on_close(self):
         try:
+            if self.mini.shown:
+                self.mini_geo.set("+%d+%d" % (self.mini.win.winfo_x(), self.mini.win.winfo_y()))
             self.save_settings()
             self.eng.stop()
         finally:

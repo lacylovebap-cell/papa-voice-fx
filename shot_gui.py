@@ -27,11 +27,12 @@ a.rv[1]["type"].set("大廳"); a.on_reverb_type(1)
 a.alpha.set(100); a.apply()
 
 
-def shot(name):
+def shot(name, win=None):
+    win = win or root
     for _ in range(20):
         root.update(); time.sleep(0.05)
-    x, y = root.winfo_rootx(), root.winfo_rooty()
-    w, h = root.winfo_width(), root.winfo_height()
+    x, y = win.winfo_rootx(), win.winfo_rooty()
+    w, h = win.winfo_width(), win.winfo_height()
     print(name, "screen", root.winfo_screenwidth(), root.winfo_screenheight(), "win", x, y, w, h)
     img = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
     img.save(os.path.join("shots", name + ".png"))
@@ -52,4 +53,10 @@ a.canvas.yview_moveto(1.0); shot("2_simple_bottom")
 a.open_mixer("fx"); shot("3_mixer_electro")
 a.open_mixer("rv", 1); shot("4_mixer_reverb")
 a.open_mixer("polish"); shot("5_mixer_polish")
+a.canvas.yview_moveto(0.0); shot("6_simple_top")
+a.mini.show(); a.mini.win.geometry("+40+40")
+for _ in range(30):
+    a.tick() if hasattr(a, "_tick_once") else None
+shot("7_mini", a.mini.win)
+a.mini.expand()
 a.on_close()
