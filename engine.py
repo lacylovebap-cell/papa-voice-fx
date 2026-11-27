@@ -545,7 +545,7 @@ class Engine:
                 self.bgm_ring = None
         self.bgm_fifo = np.zeros(0)
         try:
-            shifter = self.fx.tuner.SHIFT_LAT
+            shifter = self.fx.tuner.shift_lat()
             if self.duplex:
                 li, lo = opened[0].latency
                 rt = (li + lo) * SR + shifter
