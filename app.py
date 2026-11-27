@@ -211,6 +211,9 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.tick()
         self._update_info = None
+        if self._mon_migrated:
+            self.msg.config(text="🎧 新版：耳機聽到的人聲和伴奏比例改成跟直播／錄音一樣。耳機音量先調回 100%，太小聲請調大 Windows 音量或耳機旋鈕。",
+                            fg=C_YELLOW)
         self.root.after(4000, lambda: self.check_update(silent=True))   # 打開後自動看一次有沒有新版
 
     # ------------------------------------------------------------ 設定
@@ -249,6 +252,15 @@ class App:
         self.dev_in, self.dev_mon = self.var("dev_in", ""), self.var("dev_mon", "")
         self.dev_out, self.dev_bgm = self.var("dev_out", ""), self.var("dev_bgm", NONE)
         self.g_in, self.g_mon = self.var("g_in", 100, D), self.var("g_mon", 100, D)
+        # 第 38 版起：耳機聽到的人聲／伴奏比例＝直播（錄音）的比例（以前耳機音量只放大人聲）。
+        # 舊設定的耳機音量會讓人聲突然大很多，所以換版時先調回 100%。
+        self.mon_mix_v2 = self.var("mon_mix_v2", 0, tk.IntVar)
+        self._mon_migrated = False
+        if not self.mon_mix_v2.get():
+            if float(self.g_mon.get()) > 100:
+                self.g_mon.set(100)
+                self._mon_migrated = True
+            self.mon_mix_v2.set(1)
         self.g_out, self.g_bgm = self.var("g_out", 100, D), self.var("g_bgm", 80, D)
         self.bgm_on = self.var("bgm_on", 1, tk.IntVar)
         # 專屬模式：開機自動開「變聲」並防誤關（怕怕專用）。舊版使用者（已有設定檔）自動沿用專屬模式。
@@ -1372,7 +1384,7 @@ class App:
             bmsg = ""
             if e.backing_error or (bk is not None and bk.error):
                 bmsg = "\n伴奏抓不到：" + str(e.backing_error or bk.error)
-            mode = ("C++ 底層引擎・" if NATIVE else "Python 引擎・") + ("收音＋耳機同一條線（最即時）" if e.duplex else "收音、耳機分開（相容模式）")
+            mode = ("C++ 底層引擎・" if NATIVE else "Python 引擎・") + ("收音＋耳機同一條線（最即時）" if e.duplex else "麥克風、耳機不同聲卡：耳機各自對時（不會一陣一陣啵啵）")
             bstat = ("\n伴奏緩衝：%.0f ms，斷掉 %d 次" % (getattr(e, "bgm_buffer_ms", 0), getattr(e, "bgm_underruns", 0))) if e.backing is not None or getattr(e, "bgm_buffer_ms", 0) else ""
             self._set_text(self.status, "%s\n耳機聽自己的延遲：約 %.0f ms\n直播那條自動緩衝：%.0f ms（不影響耳機）\n耳機爆音次數：%d%s%s"
                                % (mode, e.latency_ms, e.cable_target / engine.SR * 1000, e.underruns, bstat, bmsg))

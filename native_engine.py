@@ -51,6 +51,8 @@ LIB.papa_play_buffer.argtypes = [ctypes.POINTER(ctypes.c_float), _I]
 LIB.papa_play_buffer.restype = _I
 LIB.papa_test_bgm_sim.argtypes = [_I, _I, _I, _D, _D, _I]
 LIB.papa_test_bgm_sim.restype = ctypes.c_long
+LIB.papa_test_same_card.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+LIB.papa_test_same_card.restype = _I
 
 sd = LIB   # app.py 用「engine.sd is None」判斷套件是否正常
 
@@ -187,6 +189,15 @@ class Engine:
         return (s[4], None if s[5] < 0 else s[5], None if s[6] < 0 else s[6])
 
     @property
+    def separate(self):
+        """麥克風和耳機在不同聲卡（各自對時）。"""
+        return self._st()[21] > 0.5
+
+    @property
+    def mon_underruns(self):
+        return int(self._st()[22])
+
+    @property
     def latency_ms(self):
         return self._st()[9]
 
@@ -281,6 +292,8 @@ class Engine:
         if bgm_idx >= 0:
             self.backing = _Backing(self)
         self.running = True
+        self._cache = None
+        self.duplex = not self.separate     # 不同聲卡＝分開模式（耳機有自己的對時緩衝）
         self._cache = None
         self.last_error = None
 

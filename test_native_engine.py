@@ -100,6 +100,25 @@ for r, w in ((128, 128), (128, 480), (480, 480), (480, 128), (512, 480)):
     check("伴奏不斷：耳機每次 %d、伴奏每次 %d" % (r, w), n_new == 0, "斷 %d 次" % n_new)
 check("舊的固定緩衝在 Realtek 情況會斷（測試有效）", ne.LIB.papa_test_bgm_sim(128, 480, 480, 80.0, 30.0, 0) > 0)
 check("伴奏斷掉次數讀得到", e.bgm_underruns >= 0 and e.bgm_buffer_ms > 0, "%.1f ms" % e.bgm_buffer_ms)
+# 麥克風和耳機在不同聲卡：耳機改成各自對時（不會一陣一陣啵啵）
+ne.LIB.papa_set(b"force_sep", 1.0)
+e.stop()
+e.start(ins[0][0], outs[0][0], outs[0][0], block=128, backing=outs[0][1])
+ok = False
+for _ in range(60):
+    time.sleep(0.05)
+    e._cache = None
+    if e.lv["mon"] > 0.1 and e.lv["out"] > 0.1:
+        ok = True
+        break
+check("不同聲卡模式：耳機和直播都有聲音", ok and e.separate and not e.duplex)
+time.sleep(1.5); e._cache = None
+check("不同聲卡模式：耳機緩衝穩定（斷掉不超過 2 次）", e.mon_underruns <= 2, "%d 次" % e.mon_underruns)
+check("不同聲卡模式：延遲有算進耳機緩衝", e.latency_ms > 3, "%.1f ms" % e.latency_ms)
+ne.LIB.papa_set(b"force_sep", 0.0)
+same = lambda x, y: ne.LIB.papa_test_same_card(x.encode("utf8"), y.encode("utf8")) == 1
+check("同一張聲卡判斷：G3 麥克風＋G3 喇叭＝同一張", same("五星级的 (Tenlamp G3 SoundCard)", "喇叭 (Tenlamp G3 SoundCard)"))
+check("同一張聲卡判斷：G3 麥克風＋Realtek 喇叭＝不同張", not same("五星级的 (Tenlamp G3 SoundCard)", "喇叭 (Realtek High Definition Audio)"))
 check("沒有處理錯誤", ne.LIB is not None and e._st()[12] == 0)
 e.stop()
 check("停止後不再運作", ne.LIB.papa_running() == 0)

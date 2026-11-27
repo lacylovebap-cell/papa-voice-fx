@@ -34,6 +34,14 @@ static const int SR = 48000;
 
 // ---------------------------------------------------------------- 對時緩衝（單一寫入／單一讀取）
 // 不夠時淡出而不是突然變 0；累積過多時用極小幅度重新取樣追上，不會整段丟棄（不會「啵」）。
+// 裝置名稱括號裡的硬體名（「喇叭 (Realtek High Definition Audio)」→「Realtek High Definition Audio」）
+static std::string hw_key(const char* name) {
+    std::string s(name ? name : "");
+    size_t a = s.rfind('('), b = s.rfind(')');
+    if (a != std::string::npos && b != std::string::npos && b > a) return s.substr(a + 1, b - a - 1);
+    return s;
+}
+
 struct Ring {
     std::vector<float> buf;
     size_t cap, r = 0, w = 0, n = 0;
@@ -111,6 +119,15 @@ struct Engine {
 
     Ring cable_ring{1 << 16};
     Ring bgm_ring{1 << 16};
+    // 麥克風和耳機在不同聲卡（例：麥克風 G3、耳機主機板 Realtek）：兩張卡的時鐘不一樣，
+    // 綁成同一條線會慢慢差開，每隔一陣子「啵」一聲。這時改成分開：耳機那條有自己的對時緩衝（會自動微調速度）。
+    bool sep_mode = false, force_sep = false;
+    ma_device mon_dev{};
+    bool mon_on = false;
+    Ring mon_ring_l{1 << 16}, mon_ring_r{1 << 16};
+    size_t mon_target = 256;
+    std::atomic<long> mon_underruns{0};
+    std::vector<float> sep_out = std::vector<float>(32768), sep_l = std::vector<float>(16384), sep_r = std::vector<float>(16384);
     size_t cable_target = 256;
     // 伴奏對時緩衝：跟著「耳機那條每次要多少」和「伴奏每次送來多少」自動加大。
     // 耳機用主機板 Realtek 時每次常是 480 個樣本（10 ms），只留 3 個小區塊的緩衝會一直斷（聽起來卡卡的）。
@@ -180,7 +197,8 @@ struct Engine {
     }
 
     void set_now(const std::string& k, double v) {
-        if (k == "g_inp") g_inp = v;
+        if (k == "force_sep") force_sep = v > 0.5;   // 測試用：同一張卡也用分開模式
+        else if (k == "g_inp") g_inp = v;
         else if (k == "g_mon") g_mon = v;
         else if (k == "g_dry") g_dry = v;
         else if (k == "g_out") g_out = v;
@@ -346,10 +364,9 @@ struct Engine {
             }
             if (play_pos >= play_buf.size()) playing.store(false);
         } else {
-            // 耳機音量拉超過 100% 只放大人聲；伴奏最多 100%，不然伴奏被放大好幾倍再被限制器硬壓，會爆爆的
-            double g_mon_bg = std::min(g_mon, 1.0);
+            // 耳機聽到的人聲／伴奏比例＝直播（錄音）的比例；耳機音量只是整體大小
             for (int i = 0; i < frames; i++)
-                mon[i] = tmp_y[i] * g_mon + tmp_bg[i] * g_mon_bg + tmp_in[i] * g_dry * g_mon;
+                mon[i] = (tmp_y[i] * g_out + tmp_bg[i]) * g_mon + tmp_in[i] * g_dry * g_mon;
         }
         if (mon_mode == 2) {   // 手機外放：小喇叭沒有低音、中高音突出
             for (int i = 0; i < frames; i++) {
@@ -365,7 +382,7 @@ struct Engine {
         for (int i = 0; i < frames; i++) {
             float v = (float)mon[i];
             pk_mon = std::max(pk_mon, std::fabs(v));
-            float w = use_side ? (float)(sd[i] * g_mon) : 0.f;   // 混響左右寬度（只有耳機聽得到）
+            float w = use_side ? (float)(sd[i] * g_out * g_mon) : 0.f;   // 混響左右寬度（只有耳機聽得到）
             out_stereo[2 * i] = std::max(-1.f, std::min(1.f, v + w));
             out_stereo[2 * i + 1] = std::max(-1.f, std::min(1.f, v - w));
         }
@@ -380,6 +397,35 @@ struct Engine {
             e->errors++;
             std::memset(out, 0, sizeof(float) * 2 * frames);
         }
+    }
+    // 分開模式：麥克風那張卡收到聲音就處理，耳機的聲音先放進對時緩衝
+    static void cap_cb(ma_device* d, void*, const void* in, ma_uint32 frames) {
+        Engine* e = (Engine*)d->pUserData;
+        if (e->sep_out.size() < 2 * (size_t)frames) return;
+        float* o = e->sep_out.data();
+        try {
+            e->process((const float*)in, o, (int)frames);
+        } catch (...) {
+            e->errors++;
+            std::memset(o, 0, sizeof(float) * 2 * frames);
+        }
+        for (ma_uint32 i = 0; i < frames; i++) { e->sep_l[i] = o[2 * i]; e->sep_r[i] = o[2 * i + 1]; }
+        e->mon_ring_l.write(e->sep_l.data(), frames);
+        e->mon_ring_r.write(e->sep_r.data(), frames);
+    }
+    static void mon_cb(ma_device* d, void* out, const void*, ma_uint32 frames) {
+        Engine* e = (Engine*)d->pUserData;
+        float* o = (float*)out;
+        if (e->cable_tmp.size() < frames) { std::memset(out, 0, sizeof(float) * 2 * frames); return; }
+        size_t need = std::max<size_t>(e->mon_target, (size_t)frames + (size_t)e->block);
+        long before = e->mon_ring_l.underruns;
+        e->mon_ring_l.read(e->sep_l.data() + 8192, frames, need);
+        e->mon_ring_r.read(e->sep_r.data() + 8192, frames, need);
+        if (e->mon_ring_l.underruns > before) {
+            e->mon_underruns++;
+            if (e->mon_target < (size_t)e->block * 12) e->mon_target += e->block;
+        }
+        for (ma_uint32 i = 0; i < frames; i++) { o[2 * i] = e->sep_l[8192 + i]; o[2 * i + 1] = e->sep_r[8192 + i]; }
     }
     static void cable_cb(ma_device* d, void* out, const void*, ma_uint32 frames) {
         Engine* e = (Engine*)d->pUserData;
@@ -436,6 +482,36 @@ struct Engine {
         ensure(8192);
         fx->t1.resize(8192); fx->t2.resize(8192);
 
+        // 同一張聲卡嗎？用名稱括號裡的硬體名比較（例：「五星級的 (Tenlamp G3 SoundCard)」）
+        sep_mode = force_sep || hw_key(cp[in_idx].name) != hw_key(pb[mon_idx].name);
+        mon_ring_l.clear(); mon_ring_r.clear();
+        mon_target = (size_t)block * 2; mon_underruns = 0;
+        if (sep_mode) {
+            ma_device_config m = ma_device_config_init(ma_device_type_playback);
+            m.sampleRate = SR;
+            m.periodSizeInFrames = (ma_uint32)block;
+            m.performanceProfile = ma_performance_profile_low_latency;
+            m.playback.pDeviceID = &pb[mon_idx].id;
+            m.playback.format = ma_format_f32; m.playback.channels = 2;
+            m.playback.shareMode = exclusive ? ma_share_mode_exclusive : ma_share_mode_shared;
+            m.dataCallback = mon_cb; m.pUserData = this;
+            ma_result rm = ma_device_init(&ctx, &m, &mon_dev);
+            if (rm != MA_SUCCESS && exclusive) { m.playback.shareMode = ma_share_mode_shared; rm = ma_device_init(&ctx, &m, &mon_dev); }
+            if (rm != MA_SUCCESS) { last_error = std::string("開啟耳機失敗：") + ma_result_description(rm); return -3; }
+            mon_on = true;
+            ma_device_config c = ma_device_config_init(ma_device_type_capture);
+            c.sampleRate = SR;
+            c.periodSizeInFrames = (ma_uint32)block;
+            c.performanceProfile = ma_performance_profile_low_latency;
+            c.capture.pDeviceID = &cp[in_idx].id;
+            c.capture.format = ma_format_f32; c.capture.channels = 1;
+            c.capture.shareMode = exclusive ? ma_share_mode_exclusive : ma_share_mode_shared;
+            c.dataCallback = cap_cb; c.pUserData = this;
+            ma_result r = ma_device_init(&ctx, &c, &main_dev);
+            if (r != MA_SUCCESS && exclusive) { c.capture.shareMode = ma_share_mode_shared; r = ma_device_init(&ctx, &c, &main_dev); }
+            if (r != MA_SUCCESS) { last_error = std::string("開啟麥克風失敗：") + ma_result_description(r); ma_device_uninit(&mon_dev); mon_on = false; return -3; }
+            main_on = true;
+        } else {
         // 收音＋耳機（同一條線）
         ma_device_config c = ma_device_config_init(ma_device_type_duplex);
         c.sampleRate = SR;
@@ -457,6 +533,7 @@ struct Engine {
         }
         if (r != MA_SUCCESS) { last_error = std::string("開啟麥克風／耳機失敗：") + ma_result_description(r); return -3; }
         main_on = true;
+        }
 
         // 直播（CABLE）
         if (out_idx >= 0 && out_idx < (int)nb) {
@@ -489,7 +566,9 @@ struct Engine {
 
         // 延遲估計：收音＋耳機的內部緩衝＋變調
         double cap_frames = (double)main_dev.capture.internalPeriodSizeInFrames;
-        double play_frames = (double)main_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, main_dev.playback.internalPeriods);
+        double play_frames = sep_mode
+            ? (double)mon_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, mon_dev.playback.internalPeriods) + (double)mon_target
+            : (double)main_dev.playback.internalPeriodSizeInFrames * std::max<ma_uint32>(1, main_dev.playback.internalPeriods);
         double shifter = Tuner::SHIFT_LAT;
         double rt = cap_frames + play_frames + block + shifter;
         latency_ms = rt * 1000.0 / SR;
@@ -497,6 +576,7 @@ struct Engine {
 
         // 先開輸出，再開輸入
         if (cable_on) ma_device_start(&cable_dev);
+        if (mon_on) ma_device_start(&mon_dev);
         ma_device_start(&main_dev);
         if (bgm_on_dev) ma_device_start(&bgm_dev);
         t_start = std::chrono::steady_clock::now();
@@ -510,6 +590,7 @@ struct Engine {
         playing = false;
         if (bgm_on_dev) { ma_device_uninit(&bgm_dev); bgm_on_dev = false; }
         if (main_on) { ma_device_uninit(&main_dev); main_on = false; }
+        if (mon_on) { ma_device_uninit(&mon_dev); mon_on = false; }
         if (cable_on) { ma_device_uninit(&cable_dev); cable_on = false; }
         lv_inp = lv_mon = lv_out = lv_bgm = 0;
     }
@@ -530,6 +611,9 @@ static Engine& E() { if (!G) G = new Engine(); return *G; }
 
 // ---------------------------------------------------------------- C 介面
 PAPA_API void papa_use_null_backend(int on) { E().use_null = on != 0; E().uninit_ctx(); }
+
+// 測試用：兩個裝置名稱是不是同一張聲卡
+PAPA_API int papa_test_same_card(const char* a, const char* b) { return hw_key(a) == hw_key(b) ? 1 : 0; }
 
 PAPA_API void papa_rescan() { Engine& e = E(); if (!e.running) e.uninit_ctx(); }
 
@@ -566,7 +650,7 @@ PAPA_API int papa_last_error(char* out, int cap) {
 
 // 狀態：0-3 電平(麥克風/耳機/直播/伴奏) 4 頻率 5 唱的音 6 目標音 7 調 8 移動量 9 延遲ms
 // 10 直播緩衝ms 11 爆音次數 12 錯誤次數 13 麥克風太大聲 14 錄音中 15 已錄秒數 16 播放中 17 伴奏擷取電平 18 伴奏有開
-// 19 伴奏斷掉次數 20 伴奏緩衝ms
+// 19 伴奏斷掉次數 20 伴奏緩衝ms 21 麥克風／耳機分開（不同聲卡） 22 耳機緩衝斷掉次數
 PAPA_API void papa_status(double* o) {
     Engine& e = E();
     o[0] = e.lv_inp; o[1] = e.lv_mon; o[2] = e.lv_out; o[3] = e.lv_bgm;
@@ -583,6 +667,8 @@ PAPA_API void papa_status(double* o) {
     o[18] = e.bgm_on_dev ? 1 : 0;
     o[19] = (double)e.bgm_underruns;
     o[20] = (double)e.bgm_target * 1000.0 / SR;
+    o[21] = e.sep_mode ? 1 : 0;
+    o[22] = (double)e.mon_underruns;
 }
 
 PAPA_API void papa_rec_start() { Engine& e = E(); e.playing = false; e.rec_n = 0; e.recording = true; }

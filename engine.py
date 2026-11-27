@@ -380,9 +380,9 @@ class Engine:
                 if self.play_pos >= len(pd):
                     self.play_data = None
             else:
-                # 耳機音量拉超過 100% 只放大人聲；伴奏最多 100%（不然被限制器硬壓會爆爆的）
+                # 耳機聽到的人聲／伴奏比例＝直播（錄音）的比例；耳機音量只是整體大小
                 gm = self.gains["mon"]
-                mon = self.lim_mon.process(y * gm + bg_mon * min(gm, 1.0) + dry * (self.gains["dry"] * gm))
+                mon = self.lim_mon.process((y * self.gains["out"] + bg_mon) * gm + dry * (self.gains["dry"] * gm))
                 if int(self.params.get("mon_mode", 0)) == 2:     # 試聽：手機外放
                     if getattr(self, "_phone_sim", None) is None:
                         from dsp import Biquad
