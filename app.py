@@ -354,6 +354,7 @@ class App:
         self.polish = {k: self.var("pol_" + k, 0, D) for k in POLISH}
         self.deess = self.var("deess", 40, D)
         self.gate = self.var("gate", 0, D)
+        self.gate_lock = self.var("gate_lock", False, tk.BooleanVar)   # 🔒 降噪鎖住：一鍵、復原、場景都不會改到降噪
         self.dehum = self.var("dehum", 1, tk.IntVar)   # 去電流聲（60 Hz 嗡聲），預設開          # 降噪：所有效果（包括無效果）共用，預設 0＝不處理
         # 人聲質感分兩組：「無效果」自己一組；其他效果共用一組。切換時各自記住。
         self.polish_sets_var = self.var("polish_sets", "")
@@ -680,6 +681,13 @@ class App:
             vl = self.label(pol, "", 8, C_SUB, width=4)
             vl.grid(row=r, column=c + 2)
             var._fmt = (vl, "{:.0f}%")
+            if k == "gate":
+                self.gate_scale = pol.grid_slaves(row=r, column=c + 1)[0]
+                self.btn_gate_lock = tk.Checkbutton(pol, text="🔒", variable=self.gate_lock, command=self.on_gate_lock,
+                                                    bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP, activebackground=C_CARD,
+                                                    activeforeground=C_TXT, font=(FONT, 8), bd=0, padx=0, pady=0)
+                self.btn_gate_lock.grid(row=r, column=c + 3, sticky="w")
+        self._refresh_gate_lock()
         pb = tk.Frame(pol, bg=C_CARD)
         pb.grid(row=1, column=0, columnspan=3, sticky="w")
         self.btn_dehum = tk.Checkbutton(pb, text="🔌 去電流聲", variable=self.dehum, command=self.apply, bg=C_CARD, fg=C_TXT,
@@ -939,6 +947,14 @@ class App:
             kw["eq_lo"] = kw["eq_mid"] = kw["eq_hi"] = 0.0
         for k in POLISH:
             kw[k] = float(self.polish[k].get()) / 100
+        if getattr(self, "gate_lock", None) is not None and self.gate_lock.get():   # 鎖住：任何地方改到都還原成鎖住的值
+            lv = getattr(self, "_gate_locked_v", None)
+            if lv is None:
+                self._gate_locked_v = lv = float(self.gate.get())
+            if abs(float(self.gate.get()) - lv) > 1e-9:
+                self.gate.set(lv)
+        else:
+            self._gate_locked_v = None
         kw["gate"] = float(self.gate.get()) / 100
         kw["dehum"] = bool(self.dehum.get())
         kw["mon_mode"] = int(self.listen.get())
@@ -1240,6 +1256,23 @@ class App:
         self.button(row, "取消", w.destroy, size=9).pack(side="right", padx=6)
         return w
 
+    def _refresh_gate_lock(self):
+        try:
+            self.gate_scale.state(["disabled"] if self.gate_lock.get() else ["!disabled"])
+        except Exception:
+            pass
+
+    def on_gate_lock(self):
+        self._gate_locked_v = float(self.gate.get()) if self.gate_lock.get() else None
+        self._refresh_gate_lock()
+        if hasattr(self, "msg"):
+            self.msg.config(text=("🔒 降噪已鎖住在 %.0f%%：所有效果（包含無效果）都用這個，一鍵、復原、載入設定都不會改到它。"
+                                  % float(self.gate.get())) if self.gate_lock.get() else "🔓 降噪已解鎖。", fg=C_SUB)
+
+    def _set_gate(self, v):
+        if not self.gate_lock.get():
+            self.gate.set(v)
+
     def _style_snapshot(self):
         sets = json.loads(json.dumps(self.polish_sets))
         sets[self.polish_group()] = self._polish_now()
@@ -1252,7 +1285,7 @@ class App:
         self.polish_sets = json.loads(json.dumps(snap["sets"]))
         self._polish_load(self.polish_sets[self.polish_group()])
         if "gate" in snap:
-            self.gate.set(snap["gate"])
+            self._set_gate(snap["gate"])
 
     def apply_style(self, name):
         """一鍵套用某種歌的混響＋人聲質感（只動這兩樣；按「↶ 復原」可以回到按之前）。"""
@@ -1278,8 +1311,8 @@ class App:
             self.polish_sets["fx"].update({k: float(v) for k, v in pol.items()})
         else:
             self._polish_load({k: float(v) for k, v in pol.items()})
-        if "gate" in st:                       # 降噪是所有效果共用
-            self.gate.set(st["gate"])
+        if "gate" in st:                       # 降噪是所有效果共用（鎖住就不動）
+            self._set_gate(st["gate"])
         self._style_now = name
         self.apply()
         for k, b in self.style_btns.items():
@@ -1354,7 +1387,7 @@ class App:
             if k in self.polish:
                 self.polish[k].set(v)
         if "gate" in s:
-            self.gate.set(s["gate"])
+            self._set_gate(s["gate"])
         if isinstance(s.get("polish_sets"), dict):
             for g in ("dry", "fx"):
                 self.polish_sets[g].update({k: float(v) for k, v in s["polish_sets"].get(g, {}).items() if k in self.polish_sets[g]})
