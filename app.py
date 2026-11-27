@@ -147,6 +147,7 @@ ONE_CLICK = {
                rv=[("人聲板", 25, dict(size=70, bright=55, pre=20)), ("大廳", 15, dict(size=85, bright=45, pre=35))],
                polish=dict(loud=50, clarity=45, thick=30, widen=60, duck=0)),
 }
+DRY_POLISH = dict(loud=0.0, clarity=0.0, thick=0.0, widen=0.0, duck=0.0, deess=40.0)   # 無效果預設：乾淨、不加料
 ONE_CLICK_SLOTS = 10      # 一鍵區顯示幾個按鈕（其他的在「更多」裡）
 ONE_CLICK_DEFAULT = ["CD", "流行", "甜歌", "抒情", "悲傷", "古風", "說唱", "搖滾", "爵士", "清唱"]
 
@@ -356,6 +357,12 @@ class App:
         except Exception:
             ps = {}
         self.polish_sets = {g: dict(cur, **{k: float(v) for k, v in ps.get(g, {}).items() if k in cur}) for g in ("dry", "fx")}
+        # 第 47 版：無效果＝乾淨的聲音。以前無效果那組是從當時的設定（常常是 CD 質感）複製來的，聽起來跟有效果差不多，
+        # 所以換版時把無效果那組人聲質感歸零一次（去齒音維持 40%）。
+        self.dry_clean_v1 = self.var("dry_clean_v1", 0, tk.IntVar)
+        if not self.dry_clean_v1.get():
+            self.polish_sets["dry"] = dict(DRY_POLISH)
+            self.dry_clean_v1.set(1)
         self._polish_group = None       # None＝下次 apply 直接載入目前那組
         self.g_dry = self.var("g_dry", 0, D, remember=False)   # 耳機混原聲：已不需要（變聲延遲很低），固定 0
         self.el_style = self.var("el_style3", "電音")
@@ -650,6 +657,7 @@ class App:
             var._fmt = (vl, "{:.0f}%")
         pb = tk.Frame(pol, bg=C_CARD)
         pb.grid(row=0, column=3, columnspan=3, sticky="e")
+        self.button(pb, "↺ 歸零", self.reset_polish, size=8).pack(side="left")
         self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
         self.fx_note = self.label(fx, "", 8, C_SUB, anchor="w")
         self.fx_note.pack(fill="x", pady=(4, 0))
@@ -1031,6 +1039,17 @@ class App:
         self.active_preset = None
         self.apply()
         self._mixer_fx_changed()
+        for b in getattr(self, "style_btns", {}).values():      # 一鍵風格屬於「有效果」那組，無效果時不亮
+            b.config(bg=C_BTN)
+        self.msg.config(text="✋ 無效果：沒有混響、沒有修音／電音，只有變聲＋無效果自己的人聲質感"
+                             + ("（目前都是 0＝乾淨的聲音）。" if all(abs(v) < 1e-6 for k, v in self._polish_now().items() if k != "deess")
+                                else "（想完全乾淨，按人聲質感的「↺ 歸零」）。"), fg=C_SUB)
+
+    def reset_polish(self):
+        """人聲質感歸零（只改目前這組：無效果時改無效果那組）。降噪不動。"""
+        self._polish_load(dict(DRY_POLISH))
+        self.apply()
+        self.msg.config(text="↺ 人聲質感已歸零（%s那組）。" % ("無效果" if self.polish_group() == "dry" else "效果共用"), fg=C_SUB)
 
     def set_mode(self, val):
         self.mode.set("off" if self.mode.get() == val else val)
