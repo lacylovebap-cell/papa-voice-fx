@@ -6,3 +6,4 @@ dist/
 build/
 *.so
 version.py
+version_info_build.txt

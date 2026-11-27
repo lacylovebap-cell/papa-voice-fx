@@ -48,10 +48,12 @@ jobs:
           path: shots/
       - name: 寫入版本編號
         shell: pwsh
-        run: '"VERSION = ${{ github.run_number }}" | Out-File -Encoding utf8 version.py'
+        run: |
+          "VERSION = ${{ github.run_number }}" | Out-File -Encoding utf8 version.py
+          (Get-Content -Raw -Encoding utf8 version_info.txt).Replace('BUILD', '${{ github.run_number }}') | Out-File -Encoding utf8 version_info_build.txt
       - name: 打包 exe
         run: >
-          pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx
+          pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx --version-file version_info_build.txt
           --collect-all sounddevice --collect-all soundcard
           --add-binary "papa_engine.dll;." --hidden-import native_engine --hidden-import native_fx
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
@@ -62,6 +64,9 @@ jobs:
         run: |
           python -c "import sounddevice, soundcard, numpy, scipy.signal, pynput.keyboard, tkinter; print('loopback:', [m.name for m in soundcard.all_microphones(include_loopback=True)]); print('imports ok', sounddevice.get_portaudio_version())"
           Get-Item dist/PaPaVoiceFx.exe | Select-Object Name, Length
+          $vi = (Get-Item dist/PaPaVoiceFx.exe).VersionInfo
+          "作者：" + $vi.CompanyName + "　產品：" + $vi.ProductName + "　版本：" + $vi.ProductVersion
+          if ($vi.CompanyName -ne '怕怕') { throw "exe 的作者不是怕怕" }
       - uses: actions/upload-artifact@v4
         with:
           name: PaPaVoiceFx-exe
