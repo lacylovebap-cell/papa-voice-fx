@@ -293,6 +293,8 @@ class App:
         # 舊設定的耳機音量會讓人聲突然大很多，所以換版時先調回 100%。
         # 第 44 版起：直播、錄音、耳機三個永遠一樣大。要一起變大聲用「總音量」；耳機只能調小（最多 100%）。
         self.g_master = self.var("g_master", 100, D)
+        self.g_monbgm = self.var("g_monbgm", 100, D)    # 只有耳機裡的伴奏（抓節拍用），直播和錄音不變
+        self.g_monrv = self.var("g_monrv", 100, D)      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
         self.mon_mix_v3 = self.var("mon_mix_v3", 0, tk.IntVar)
         self._mon_migrated = False
         if not self.mon_mix_v3.get():
@@ -518,7 +520,22 @@ class App:
         vl.pack(side="left")
         self.g_master._fmt = (vl, "{:.0f}%")
         self.button(mr, "↺", lambda: (self.g_master.set(100), self.apply()), size=8).pack(side="left", padx=(0, 8))
-        self.label(mr, "唱歌當下、回放、存檔三個一起變大／變小（永遠一樣大）。耳機那條只能調小。", 8, C_SUB).pack(side="left")
+        self.label(mr, "🎧 耳機伴奏", 9, C_GREEN, True).pack(side="left", padx=(6, 0))
+        ttk.Scale(mr, from_=50, to=300, variable=self.g_monbgm, orient="horizontal", length=120,
+                  command=lambda v: self.apply()).pack(side="left", padx=(6, 2))
+        vl = self.label(mr, "", 8, C_SUB, width=5)
+        vl.pack(side="left")
+        self.g_monbgm._fmt = (vl, "{:.0f}%")
+        self.button(mr, "↺", lambda: (self.g_monbgm.set(100), self.apply()), size=8).pack(side="left")
+        self.label(mr, "🎧 耳機混響", 9, C_GREEN, True).pack(side="left", padx=(10, 0))
+        ttk.Scale(mr, from_=0, to=100, variable=self.g_monrv, orient="horizontal", length=100,
+                  command=lambda v: self.apply()).pack(side="left", padx=(6, 2))
+        vl = self.label(mr, "", 8, C_SUB, width=5)
+        vl.pack(side="left")
+        self.g_monrv._fmt = (vl, "{:.0f}%")
+        self.button(mr, "↺", lambda: (self.g_monrv.set(100), self.apply()), size=8).pack(side="left")
+        self.label(box, "🔊 總音量：當下、回放、存檔一起變。🎧 耳機伴奏／耳機混響：只改你自己耳機裡聽到的（抓節拍、不被混響拖拍），直播和錄音不變。",
+                   8, C_SUB, anchor="w").grid(row=9, column=1, columnspan=4, sticky="w")
         # 試聽：用耳機聽聽看觀眾那邊的樣子（只改耳機，直播不受影響）
         ls = tk.Frame(box, bg=C_CARD)
         ls.grid(row=7, column=1, columnspan=4, sticky="w", pady=(6, 0))
@@ -884,7 +901,7 @@ class App:
             kw[n + "lowcut"] = float(r["lowcut"].get())
         self.eng.set_params(**kw)
         for name, v in (("inp", self.g_in), ("mon", self.g_mon), ("dry", self.g_dry), ("out", self.g_out), ("bgm", self.g_bgm),
-                        ("master", self.g_master)):
+                        ("master", self.g_master), ("monbgm", self.g_monbgm), ("monrv", self.g_monrv)):
             self.eng.set_gain(name, float(v.get()) / 100)
         self.eng.bgm_on = bool(self.bgm_on.get())
         self.eng.bgm_trim_ms = float(self.bgm_trim.get())

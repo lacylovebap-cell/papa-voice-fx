@@ -153,6 +153,43 @@ sp = np.abs(np.fft.rfft(cab * np.hanning(len(cab)))); fr = np.fft.rfftfreq(len(c
 pk = lambda f: sp[np.abs(fr - f) < 3].max()
 check("伴奏 500Hz 原樣出現在直播輸出（沒被變音）", pk(500) > 10 * pk(500 * 2 ** (1.5 / 12)), f"{pk(500):.0f} vs {pk(500*2**(1.5/12)):.0f}")
 check("人聲仍有聲卡變音（226→升 1.5 半音）", pk(226 * 2 ** (1.5 / 12)) > 5 * pk(226))
+# 耳機伴奏：只有耳機裡的伴奏變大，直播（錄音）不變
+def run_bgm(monbgm):
+    eng.set_gain("monbgm", monbgm)
+    eng.bgm_ring = engine.Ring(BLOCK * 32)
+    m_, c_ = [], []
+    for s in range(0, len(sig), BLOCK):
+        eng.bgm_ring.write(bgm[s:s + BLOCK])
+        inp.cb(np.zeros((BLOCK, 1), np.float32), BLOCK, None, None)
+        o1 = np.zeros((BLOCK, 2), np.float32); mon.cb(o1, BLOCK, None, None); m_.append(o1[:, 0])
+        o2 = np.zeros((BLOCK, 2), np.float32); out.cb(o2, BLOCK, None, None); c_.append(o2[:, 0])
+    r = lambda x: float(np.sqrt(np.mean(np.concatenate(x)[SR // 2:] ** 2)))
+    return r(m_), r(c_)
+m1, c1 = run_bgm(1.0)
+m2, c2 = run_bgm(2.0)
+check("耳機伴奏 200%：耳機裡的伴奏變大", m2 > 1.6 * m1, "%.3f → %.3f" % (m1, m2))
+check("耳機伴奏 200%：直播的伴奏不變", abs(c2 - c1) < 0.01 * max(c1, 1e-6) + 1e-4, "%.3f → %.3f" % (c1, c2))
+eng.set_gain("monbgm", 1.0)
+# 耳機混響：只有耳機裡的混響變小，直播不變
+eng.bgm_ring = None
+eng.set_params(rv1_type=5, rv1_mix=0.6)
+def run_rv(k):
+    eng.set_gain("monrv", k)
+    m_, c_ = [], []
+    for s in range(0, len(sig), BLOCK):
+        inp.cb(sig[s:s + BLOCK].reshape(-1, 1), BLOCK, None, None)
+        o1 = np.zeros((BLOCK, 2), np.float32); mon.cb(o1, BLOCK, None, None); m_.append(o1[:, 0])
+        o2 = np.zeros((BLOCK, 2), np.float32); out.cb(o2, BLOCK, None, None); c_.append(o2[:, 0])
+    return np.concatenate(m_), np.concatenate(c_)
+run_rv(1.0)                       # 先跑一次讓混響、緩衝都穩定
+m_full, c_full = run_rv(1.0)
+m_none, c_none = run_rv(0.0)
+r_ = lambda x: float(np.sqrt(np.mean(x[SR // 2:] ** 2)))
+db_mon = 20 * np.log10(r_(m_none) / r_(m_full)); db_out = 20 * np.log10(r_(c_none) / r_(c_full))
+# 測試音是穩定的正弦波，混響和原音的相位會互相抵消一部分，所以拿掉混響不一定變小聲；只確認耳機有明顯改變
+check("耳機混響 0%：耳機裡的混響拿掉了（耳機明顯改變）", abs(db_mon) > 1.0, "%.1f dB" % db_mon)
+check("耳機混響 0%：直播的混響不變", abs(db_out) < 0.3, "%.2f dB" % db_out)
+eng.set_gain("monrv", 1.0); eng.set_params(rv1_mix=0.0)
 eng.bgm_on = False
 inp.cb(np.zeros((BLOCK, 1), np.float32), BLOCK, None, None)
 eng.bgm_ring = None

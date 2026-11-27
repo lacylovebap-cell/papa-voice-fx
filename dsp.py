@@ -1030,11 +1030,14 @@ class VoiceFx:
             self.doubler.process(y, 0.0, 0.0)
         # 混響（每一層各自加上去；兩側成分另外給耳機做立體寬度）
         dry = y
+        rv = np.zeros(len(y))
         for L in self.layers:
             if L.active:
                 m, sd = L.process(dry)
                 y = y + m
+                rv = rv + m
                 side = side + sd
+        self.rv_wet = rv[:n0].astype(np.float32)     # 混響的部分（耳機可以單獨調小，直播不變）
         self.side = side[:n0].astype(np.float32)
         y = np.clip(y, -1.0, 1.0)
         return y[:n0].astype(np.float32)

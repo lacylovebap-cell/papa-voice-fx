@@ -809,7 +809,8 @@ struct VoiceFx {
     Doubler doubler;
     Leveler leveler;
     NoiseGate gate;
-    std::vector<float> side;        // 混響的左右差（只給耳機做立體寬度）
+    std::vector<float> side;
+    std::vector<float> rv_wet, rv_side;   // 混響的部分（耳機混響用）        // 混響的左右差（只給耳機做立體寬度）
     double ring_ph = 0;
     std::vector<double> t1, t2;
 
@@ -935,19 +936,24 @@ struct VoiceFx {
             }
         }
         // 混響：每一層各自加上去（中間＝直播聽得到；兩側＝耳機的立體寬度）
+        // rv_wet／rv_side 另外記下混響的部分，讓耳機可以單獨把混響調小（直播不變）
         bool any = false;
         for (auto& L : layers) any = any || L.active();
+        if ((int)rv_wet.size() < n) { rv_wet.resize(n); rv_side.resize(n); }
+        std::fill(rv_wet.begin(), rv_wet.begin() + n, 0.f);
+        std::fill(rv_side.begin(), rv_side.begin() + n, 0.f);
         if (any) {
             for (int i = 0; i < n; i++) {
-                double dry = y[i], m = 0, sd = side[i];
+                double dry = y[i], m = 0, sd = side[i], rs = 0;
                 for (auto& L : layers) {
                     if (!L.active()) continue;
                     double mm, ss;
                     L.tick(dry, mm, ss);
-                    m += mm; sd += ss;
+                    m += mm; rs += ss;
                 }
                 y[i] = dry + m;
-                side[i] = (float)sd;
+                side[i] = (float)(sd + rs);
+                rv_wet[i] = (float)m; rv_side[i] = (float)rs;
             }
         }
         for (int i = 0; i < n0; i++) io[i] = (float)std::max(-1.0, std::min(1.0, y[i]));

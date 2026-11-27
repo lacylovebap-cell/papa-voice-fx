@@ -65,6 +65,11 @@ PAPA_API void papa_fx_side(void* h, float* out, int n) {
     VoiceFx* fx = (VoiceFx*)h;
     for (int i = 0; i < n; i++) out[i] = i < (int)fx->side.size() ? fx->side[i] : 0.f;
 }
+// 上一個區塊的混響部分（耳機混響用）
+PAPA_API void papa_fx_rvwet(void* h, float* out, int n) {
+    VoiceFx* fx = (VoiceFx*)h;
+    for (int i = 0; i < n; i++) out[i] = i < (int)fx->rv_wet.size() ? fx->rv_wet[i] : 0.f;
+}
 
 // out[0]=偵測到的頻率 out[1]=唱的音(MIDI，沒聲音時 -1) out[2]=目標音(-1) out[3]=判斷的調(-1)
 // out[4]=目前移動量(半音) out[5]=去齒音壓了幾 dB

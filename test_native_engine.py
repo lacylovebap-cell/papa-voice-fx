@@ -106,6 +106,14 @@ time.sleep(0.6); e._cache = None
 lm, lo = e.lv["mon"], e.lv["out"]
 check("耳機和直播／錄音一樣大（差不到 1 dB）", lo > 0.05 and abs(20 * np.log10(lm / lo)) < 1.0, "耳機 %.3f 直播 %.3f" % (lm, lo))
 ne.LIB.papa_set(b"g_master", 1.0); ne.LIB.papa_set(b"g_mon", 1.0); ne.LIB.papa_set(b"g_out", 1.0)
+# 耳機伴奏：只有耳機裡的伴奏變大，直播不變
+ne.LIB.papa_set(b"test_tone_hz", 0.0)
+ne.LIB.papa_set(b"g_monbgm", 1.0); time.sleep(0.4); e._cache = None
+o1 = e.lv["out"]
+ne.LIB.papa_set(b"g_monbgm", 3.0); time.sleep(0.4); e._cache = None
+o3 = e.lv["out"]
+check("耳機伴奏拉大：直播的聲音不變", abs(o3 - o1) < 0.02, "%.3f → %.3f" % (o1, o3))
+ne.LIB.papa_set(b"g_monbgm", 1.0); ne.LIB.papa_set(b"test_tone_hz", 220.0)
 # 麥克風和耳機在不同聲卡：耳機改成各自對時（不會一陣一陣啵啵）
 ne.LIB.papa_set(b"force_sep", 1.0)
 e.stop()

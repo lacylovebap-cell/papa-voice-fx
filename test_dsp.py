@@ -583,5 +583,14 @@ check("自然修音：只偏 10 音分（夠準）就不修，保留原本的味
 c60 = natural_out(60, strength=0.7, tol=0.2)
 check("自然修音：偏很多時拉近一部分，不會一口氣拉到死準", 60 < c60 < 95, "%+.0f 音分" % c60)
 
+# ---------- 混響的部分另外記下來（耳機可以單獨調小）：人聲＝乾聲＋混響
+f = VoiceFx(SR); f.set(comp=0.0, deess=0.0, rv1_type=4, rv1_mix=0.5)
+xx = (0.3 * np.sin(2 * np.pi * 300 * np.arange(SR) / SR)).astype(np.float32)
+outs, wets = [], []
+for i in range(0, SR - 255, 256):
+    outs.append(f.process(xx[i:i + 256])); wets.append(np.array(f.rv_wet[:256], np.float32))
+wet = np.concatenate(wets)
+check("混響的部分有記下來（給耳機混響用）", float(np.sqrt(np.mean(wet[SR // 2:] ** 2))) > 0.01)
+
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)

@@ -109,6 +109,8 @@ struct Engine {
     std::vector<std::pair<std::string, double>> pending;
     double g_inp = 1, g_mon = 1, g_dry = 0, g_out = 1, g_bgm = 0.8;
     double g_master = 1;   // 總音量：直播、錄音、耳機一起（三個永遠一樣大）
+    double g_monbgm = 1;   // 只有耳機裡的伴奏大小（方便抓節拍），直播和錄音不變
+    double g_monrv = 1;    // 只有耳機裡的混響大小（混響會拖拍，可以自己聽小一點），直播和錄音不變
     bool bgm_on = true;
     double bgm_trim_ms = 0;
     double duck = 0, duck_db = 0;   // 伴奏避讓：唱歌時伴奏自動讓開（最多 6 dB）
@@ -204,6 +206,8 @@ struct Engine {
         else if (k == "g_dry") g_dry = v;
         else if (k == "g_out") g_out = v;
         else if (k == "g_master") g_master = v;
+        else if (k == "g_monbgm") g_monbgm = v;
+        else if (k == "g_monrv") g_monrv = v;
         else if (k == "g_bgm") g_bgm = v;
         else if (k == "bgm_on") bgm_on = v > 0.5;
         else if (k == "bgm_trim_ms") bgm_trim_ms = v;
@@ -370,8 +374,13 @@ struct Engine {
         } else {
             // 耳機＝和直播／錄音完全一樣的混音（一樣的人聲、伴奏、總音量），耳機音量只能調小
             double gm = std::min(g_mon, 1.0);
-            for (int i = 0; i < frames; i++)
-                mon[i] = (tmp_y[i] * g_out + tmp_bg[i]) * g_master * gm + tmp_in[i] * g_dry * gm;
+            double rcut = 1.0 - g_monrv;                     // 耳機混響：從人聲裡拿掉一部分混響
+            bool has_rv = std::fabs(rcut) > 1e-6 && (int)fx->rv_wet.size() >= frames;
+            const float* rw = has_rv ? fx->rv_wet.data() : nullptr;
+            for (int i = 0; i < frames; i++) {
+                double v = tmp_y[i] - (has_rv ? rcut * rw[i] : 0.0);
+                mon[i] = (v * g_out + tmp_bg[i] * g_monbgm) * g_master * gm + tmp_in[i] * g_dry * gm;
+            }
         }
         if (mon_mode == 2) {   // 手機外放：小喇叭沒有低音、中高音突出
             for (int i = 0; i < frames; i++) {
@@ -387,7 +396,7 @@ struct Engine {
         for (int i = 0; i < frames; i++) {
             float v = (float)mon[i];
             pk_mon = std::max(pk_mon, std::fabs(v));
-            float w = use_side ? (float)(sd[i] * g_out * g_master * std::min(g_mon, 1.0)) : 0.f;   // 混響左右寬度（只有耳機聽得到）
+            float w = use_side ? (float)((sd[i] - (1.0 - g_monrv) * (fx->rv_side.size() > (size_t)i ? fx->rv_side[i] : 0.f)) * g_out * g_master * std::min(g_mon, 1.0)) : 0.f;   // 混響左右寬度（只有耳機聽得到）
             out_stereo[2 * i] = std::max(-1.f, std::min(1.f, v + w));
             out_stereo[2 * i + 1] = std::max(-1.f, std::min(1.f, v - w));
         }

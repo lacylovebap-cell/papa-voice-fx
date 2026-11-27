@@ -26,6 +26,7 @@ def _load():
                 lib.papa_fx_process.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
                 lib.papa_fx_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)]
                 lib.papa_fx_side.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
+                lib.papa_fx_rvwet.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
                 lib.papa_fx_shift_state.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_double)]
                 return lib
     raise OSError("找不到 papa_engine 函式庫")
@@ -116,4 +117,7 @@ class VoiceFx:
         sd = np.zeros(len(buf), np.float32)
         LIB.papa_fx_side(self.h, sd.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(buf))
         self.side = sd
+        rw = np.zeros(len(buf), np.float32)
+        LIB.papa_fx_rvwet(self.h, rw.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(buf))
+        self.rv_wet = rw
         return buf
