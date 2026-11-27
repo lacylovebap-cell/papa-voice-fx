@@ -206,21 +206,22 @@ check("一鍵 CD 質感：混響 A＝CD 絲滑板式 25%、B／C 歸零", a.rv[0
 check("一鍵 CD 質感：響度、清晰度、厚度、加寬、避讓打開", fx.params["loud"] == 0.5 and fx.params["clarity"] == 0.4
       and fx.params["thick"] == 0.25 and fx.params["widen"] == 0.6 and fx.params["duck"] == 0.3)
 check("一鍵 CD 質感：效果和變聲不變", a.active_preset == "talk" and a.card.get() == card1)
-# 一鍵專區
-check("一鍵專區有 8 種風格", len(a.style_btns) == 8 and all(k in a.style_btns for k in app.ONE_CLICK))
-before_rv0 = a.rv[0]["type"].get()
-a.apply_style("🏮 古風")
+# 一鍵（小按鈕）
+check("一鍵有 10 種風格（CD、古風、說唱、甜歌…）", len(a.style_btns) == 10 and all(k in a.style_btns for k in ("CD", "古風", "說唱", "甜歌", "流行", "抒情", "悲傷")))
+a.apply_style("古風")
 check("一鍵古風：混響 A＝大廳 30%、C＝教堂", fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1
       and abs(fx.params["rv1_mix"] - 0.3) < 1e-6 and fx.params["rv3_type"] == app.REVERB_NAMES.index("教堂") + 1)
 check("一鍵古風：人聲質感也換了、效果和變聲不動", fx.params["widen"] == 0.7 and a.active_preset == "talk" and a.card.get() == card1)
-a.apply_style("🎤 說唱")
+a.apply_style("說唱")
 check("一鍵說唱：只留一點房間、B／C 關掉", fx.params["rv1_type"] == app.REVERB_NAMES.index("房間") + 1
       and fx.params["rv2_mix"] == 0 and fx.params["rv3_mix"] == 0 and fx.params["loud"] == 0.7)
 a.undo_style()
-check("↶ 復原：回到第一次按一鍵之前（CD 質感）", a.rv[0]["type"].get() == before_rv0 and fx.params["loud"] == 0.5)
+check("↶ 復原：回到按說唱之前（古風）", fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1 and fx.params["widen"] == 0.7)
+a.undo_style()
+check("↶ 再復原：回到按古風之前（CD）", a.rv[0]["type"].get() == "CD 絲滑板式" and fx.params["loud"] == 0.5)
 a.clear_fx()
 dry_loud = fx.params["loud"]
-a.apply_style("💧 悲傷")
+a.apply_style("悲傷")
 check("無效果時按一鍵：不動無效果自己的人聲質感", fx.params["loud"] == dry_loud and all(fx.params["rv%d_mix" % (i + 1)] == 0 for i in range(3)))
 a.preset("talk")
 check("無效果時按的風格：切到說話就聽得到", fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1 and fx.params["loud"] == 0.4)
