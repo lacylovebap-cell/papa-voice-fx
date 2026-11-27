@@ -192,8 +192,10 @@ class MiniWindow:
         for k, name, col in (("inp", "麥", A.C_CYAN), ("mon", "耳", A.C_GREEN), ("out", "播", A.C_PINK), ("bgm", "伴", A.C_YELLOW)):
             r = tk.Frame(left, bg=A.C_BG)
             r.pack(fill="x", pady=0)
-            self._lbl(r, name, width=2).pack(side="left")
-            wv = A.Wave(r, col, w=P(66), h=P(9))
+            lb = self._lbl(r, name, width=2)
+            lb.config(font=(A.FONT, max(6, int(round(7 * self.k)))))     # 字小一點：四條聲波也不會讓視窗變高
+            lb.pack(side="left")
+            wv = A.Wave(r, col, w=P(66), h=P(8))
             wv.itemconfig(wv.line, width=1 if self.k < 1.6 else 2)
             wv.pack(side="left", pady=1)
             self.waves[k] = wv

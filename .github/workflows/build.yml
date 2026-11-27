@@ -26,15 +26,16 @@ jobs:
         run: cl /nologo /O2 /EHsc /std:c++17 /utf-8 /DNOMINMAX /LD native\src\fx_api.cpp native\src\engine.cpp /Fe:papa_engine.dll ole32.lib
       - name: 測試 C++ 底層引擎
         run: |
-          python test_native_dsp.py
-          python test_lowlat.py
-          python test_native_engine.py
+          python test_native_dsp.py; if ($LASTEXITCODE -ne 0) { throw "test_native_dsp.py 有失敗" }
+          python test_lowlat.py; if ($LASTEXITCODE -ne 0) { throw "test_lowlat.py 有失敗" }
+          python test_native_engine.py; if ($LASTEXITCODE -ne 0) { throw "test_native_engine.py 有失敗" }
       - name: 離線測試
         run: |
-          python test_dsp.py
-          python test_engine.py
-          python test_updater.py
-          $env:PAPA_FORCE_PY="1"; python test_gui.py; $env:PAPA_FORCE_PY=""
+          python test_dsp.py; if ($LASTEXITCODE -ne 0) { throw "test_dsp.py 有失敗" }
+          python test_engine.py; if ($LASTEXITCODE -ne 0) { throw "test_engine.py 有失敗" }
+          python test_updater.py; if ($LASTEXITCODE -ne 0) { throw "test_updater.py 有失敗" }
+          $env:PAPA_FORCE_PY="1"; python test_gui.py; $code = $LASTEXITCODE; $env:PAPA_FORCE_PY=""
+          if ($code -ne 0) { throw "test_gui.py 有失敗" }
           python test_gui_native.py
       - name: 畫面截圖（檢查版面用）
         continue-on-error: true
