@@ -225,6 +225,23 @@ a.apply_style("悲傷")
 check("無效果時按一鍵：不動無效果自己的人聲質感", fx.params["loud"] == dry_loud and all(fx.params["rv%d_mix" % (i + 1)] == 0 for i in range(3)))
 a.preset("talk")
 check("無效果時按的風格：切到說話就聽得到", fx.params["rv1_type"] == app.REVERB_NAMES.index("大廳") + 1 and fx.params["loud"] == 0.4)
+# 更多／自己選按鈕
+check("新的「破碎感」「御姐說唱」先放在更多裡（不在按鈕上）", "破碎感" in app.ONE_CLICK and "御姐說唱" in app.ONE_CLICK
+      and "破碎感" not in a.style_btns and "御姐說唱" not in a.style_btns)
+a.swap_style("爵士", "破碎感"); a.swap_style("搖滾", "御姐說唱"); root.update()
+check("把爵士、搖滾換成破碎感、御姐說唱", "破碎感" in a.style_btns and "御姐說唱" in a.style_btns
+      and "爵士" not in a.style_btns and len(a.style_btns) == 10)
+check("換過的按鈕會記住", "破碎感" in json.loads(a.oc_visible_var.get()))
+g0 = float(a.gate.get())
+a.apply_style("破碎感")
+check("一鍵破碎感：去齒音 60%、降噪 30%、空氣感（清晰度）70%", abs(fx.params["deess"] - 0.6) < 1e-9 and abs(fx.params["gate"] - 0.3) < 1e-9
+      and fx.params["clarity"] == 0.7)
+a.undo_style()
+check("復原：降噪也回到按之前", abs(float(a.gate.get()) - g0) < 1e-9)
+dlg = a.style_choose_dialog(); root.update()
+check("可以打開「選擇要顯示的按鈕」", dlg.winfo_exists()); dlg.destroy()
+a.set_style_visible(app.ONE_CLICK_DEFAULT); root.update()
+check("恢復預設的按鈕", list(a.style_btns) == app.ONE_CLICK_DEFAULT)
 a.undo_style()
 a.apply_cd_template(ask=False)
 a.save_scene("CD 測試")

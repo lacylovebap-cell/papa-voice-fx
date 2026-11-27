@@ -136,10 +136,19 @@ ONE_CLICK = {
     "爵士": dict(desc="溫暖的小房間＋一點柔順殘響，聲音圓潤、像在小酒館",
                rv=[("房間", 18, dict(size=55, bright=40)), ("CD 絲滑板式", 12, {})],
                polish=dict(loud=45, clarity=30, thick=40, widen=40, duck=30)),
+    # 參考「单曲Studio」的混音教學：降噪→修音→兩段壓縮→EQ→空氣感→去齒音→板式＋大廳＋雙軌
+    "破碎感": dict(desc="破碎少女音：乾淨、空氣感重、有點脆弱，板式＋大廳的長尾巴，人聲變寬",
+                rv=[("CD 絲滑板式", 22, dict(size=75, bright=45, pre=25)), ("大廳", 12, dict(size=85, bright=40, pre=40, lowcut=200))],
+                polish=dict(loud=45, clarity=70, thick=30, widen=70, duck=30), deess=60, gate=30),
+    "御姐說唱": dict(desc="御姐網感說唱：很乾、貼耳朵、穩又有力，刺耳的地方壓掉",
+                 rv=[("房間", 8, dict(size=35, bright=45, pre=0, lowcut=300))],
+                 polish=dict(loud=75, clarity=45, thick=45, widen=25, duck=45), deess=55, gate=35),
     "清唱": dict(desc="沒有伴奏時用：混響多一點，把空間補起來",
                rv=[("人聲板", 25, dict(size=70, bright=55, pre=20)), ("大廳", 15, dict(size=85, bright=45, pre=35))],
                polish=dict(loud=50, clarity=45, thick=30, widen=60, duck=0)),
 }
+ONE_CLICK_SLOTS = 10      # 一鍵區顯示幾個按鈕（其他的在「更多」裡）
+ONE_CLICK_DEFAULT = ["CD", "流行", "甜歌", "抒情", "悲傷", "古風", "說唱", "搖滾", "爵士", "清唱"]
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
 
@@ -294,7 +303,8 @@ class App:
         # 第 44 版起：直播、錄音、耳機三個永遠一樣大。要一起變大聲用「總音量」；耳機只能調小（最多 100%）。
         self.g_master = self.var("g_master", 100, D)
         self.g_monbgm = self.var("g_monbgm", 100, D)    # 只有耳機裡的伴奏（抓節拍用），直播和錄音不變
-        self.g_monrv = self.var("g_monrv", 100, D)      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
+        self.g_monrv = self.var("g_monrv", 100, D)
+        self.oc_visible_var = self.var("oneclick_visible", "")          # 一鍵區要顯示哪些按鈕      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
         self.mon_mix_v3 = self.var("mon_mix_v3", 0, tk.IntVar)
         self._mon_migrated = False
         if not self.mon_mix_v3.get():
@@ -616,17 +626,15 @@ class App:
         self.btn_style_undo = tk.Button(hd, text="↶ 復原", command=self.undo_style, bg=C_BTN, fg=C_TXT, activebackground=C_BTN,
                                         relief="flat", font=(FONT, 8), cursor="hand2", bd=0, padx=4, pady=0, state="disabled")
         self.btn_style_undo.pack(side="right")
-        grid = tk.Frame(oc, bg=C_CARD)
-        grid.pack()
+        self.btn_style_more = tk.Button(hd, text="更多 ▾", command=self.style_more_menu, bg=C_BTN, fg=C_TXT, activebackground=C_BTN,
+                                        relief="flat", font=(FONT, 8), cursor="hand2", bd=0, padx=4, pady=0)
+        self.btn_style_more.pack(side="right", padx=(0, 4))
+        self.style_grid = tk.Frame(oc, bg=C_CARD)
+        self.style_grid.pack()
         self.style_btns = {}
-        for n, name in enumerate(ONE_CLICK):
-            b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_BTN, fg=C_TXT,
-                          activebackground=C_ACCENT, relief="flat", font=(FONT, 8, "bold"), cursor="hand2", bd=0,
-                          width=4, padx=2, pady=1)
-            b.grid(row=n // 5, column=n % 5, padx=1, pady=1)
-            self.style_btns[name] = b
         self._style_stack = []
         self._style_now = None
+        self._build_style_grid()
         fixed.columnconfigure(5, weight=1)
         pol = tk.Frame(fixed, bg=C_CARD)
         pol.grid(row=0, column=6, rowspan=3, sticky="ne", padx=(6, 0))
@@ -1077,10 +1085,106 @@ class App:
         self.apply_style("CD")
 
     # ---- 一鍵專區
+    def style_visible(self):
+        """一鍵區要顯示的按鈕（可以自己換；存在設定裡）。"""
+        try:
+            v = [k for k in json.loads(self.oc_visible_var.get() or "[]") if k in ONE_CLICK]
+        except Exception:
+            v = []
+        if not v:
+            v = list(ONE_CLICK_DEFAULT)
+        return v[:ONE_CLICK_SLOTS]
+
+    def set_style_visible(self, names):
+        self.oc_visible_var.set(json.dumps([k for k in names if k in ONE_CLICK][:ONE_CLICK_SLOTS], ensure_ascii=False))
+        self._build_style_grid()
+
+    def _build_style_grid(self):
+        grid = self.style_grid
+        for w in grid.winfo_children():
+            w.destroy()
+        self.style_btns = {}
+        for n, name in enumerate(self.style_visible()):
+            on = name == getattr(self, "_style_now", None)
+            b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_ACCENT if on else C_BTN, fg=C_TXT,
+                          activebackground=C_ACCENT, relief="flat", font=(FONT, 8, "bold"), cursor="hand2", bd=0,
+                          width=4, padx=2, pady=1)
+            b.grid(row=n // 5, column=n % 5, padx=1, pady=1)
+            b.bind("<Button-3>", lambda e, k=name: self.style_swap_menu(k, e))
+            self.style_btns[name] = b
+
+    def style_swap_menu(self, name, e):
+        """右鍵一個按鈕：換成「更多」裡的另一個。"""
+        m = tk.Menu(self.root, tearoff=0)
+        vis = self.style_visible()
+        hidden = [k for k in ONE_CLICK if k not in vis]
+        sub = tk.Menu(m, tearoff=0)
+        for k in hidden:
+            sub.add_command(label=k + "　（" + ONE_CLICK[k]["desc"][:14] + "…）", command=lambda kk=k: self.swap_style(name, kk))
+        m.add_cascade(label="把「%s」換成…" % name, menu=sub, state="normal" if hidden else "disabled")
+        m.add_command(label="⚙ 選擇要顯示的按鈕…", command=self.style_choose_dialog)
+        m.tk_popup(e.x_root, e.y_root)
+
+    def swap_style(self, old, new):
+        vis = self.style_visible()
+        if old in vis and new not in vis:
+            vis[vis.index(old)] = new
+            self.set_style_visible(vis)
+            self.msg.config(text="⚡ 已把「%s」換成「%s」。換下來的在「更多」裡。" % (old, new), fg=C_SUB)
+
+    def style_more_menu(self):
+        """更多：沒放在按鈕上的風格也可以直接套用，或選擇要顯示哪些。"""
+        m = tk.Menu(self.root, tearoff=0)
+        vis = self.style_visible()
+        for k in [k for k in ONE_CLICK if k not in vis]:
+            m.add_command(label="⚡ " + k + "　" + ONE_CLICK[k]["desc"][:18] + "…", command=lambda kk=k: self.apply_style(kk))
+        if len(vis) < len(ONE_CLICK):
+            m.add_separator()
+        m.add_command(label="⚙ 選擇要顯示的按鈕（最多 %d 個）…" % ONE_CLICK_SLOTS, command=self.style_choose_dialog)
+        m.add_command(label="↺ 恢復預設的按鈕", command=lambda: self.set_style_visible(ONE_CLICK_DEFAULT))
+        m.add_command(label="💡 小技巧：在按鈕上按右鍵＝直接換成別的", state="disabled")
+        b = self.btn_style_more
+        m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def style_choose_dialog(self):
+        w = tk.Toplevel(self.root)
+        w.title("選擇一鍵按鈕")
+        w.configure(bg=C_CARD)
+        w.transient(self.root)
+        self.label(w, "勾選要放在一鍵區的按鈕（最多 %d 個，順序照勾的順序）。沒勾的會在「更多」裡。" % ONE_CLICK_SLOTS,
+                   9, C_TXT, wraplength=360, justify="left").pack(anchor="w", padx=12, pady=(10, 6))
+        order = list(self.style_visible())
+        vars_ = {}
+        cnt = self.label(w, "", 9, C_SUB)
+
+        def toggle(k):
+            if vars_[k].get():
+                if len(order) >= ONE_CLICK_SLOTS:
+                    vars_[k].set(0)
+                    cnt.config(text="已經 %d 個了，先取消一個再勾" % ONE_CLICK_SLOTS, fg=C_YELLOW)
+                    return
+                order.append(k)
+            elif k in order:
+                order.remove(k)
+            cnt.config(text="已選 %d／%d" % (len(order), ONE_CLICK_SLOTS), fg=C_SUB)
+        for k, st in ONE_CLICK.items():
+            v = tk.IntVar(value=1 if k in order else 0)
+            vars_[k] = v
+            tk.Checkbutton(w, text="%s　%s" % (k, st["desc"]), variable=v, command=lambda kk=k: toggle(kk), bg=C_CARD, fg=C_TXT,
+                           selectcolor=C_DEEP, activebackground=C_CARD, activeforeground=C_TXT, anchor="w",
+                           font=(FONT, 9)).pack(fill="x", padx=12)
+        cnt.config(text="已選 %d／%d" % (len(order), ONE_CLICK_SLOTS))
+        cnt.pack(anchor="w", padx=12, pady=(6, 0))
+        row = tk.Frame(w, bg=C_CARD)
+        row.pack(fill="x", padx=12, pady=10)
+        self.button(row, "✔ 好", lambda: (self.set_style_visible(order), w.destroy()), color=C_ACCENT, size=9).pack(side="right")
+        self.button(row, "取消", w.destroy, size=9).pack(side="right", padx=6)
+        return w
+
     def _style_snapshot(self):
         sets = json.loads(json.dumps(self.polish_sets))
         sets[self.polish_group()] = self._polish_now()
-        return dict(rv=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv], sets=sets)
+        return dict(rv=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv], sets=sets, gate=float(self.gate.get()))
 
     def _style_restore(self, snap):
         for r, d in zip(self.rv, snap["rv"]):
@@ -1088,6 +1192,8 @@ class App:
                 r[k].set(v)
         self.polish_sets = json.loads(json.dumps(snap["sets"]))
         self._polish_load(self.polish_sets[self.polish_group()])
+        if "gate" in snap:
+            self.gate.set(snap["gate"])
 
     def apply_style(self, name):
         """一鍵套用某種歌的混響＋人聲質感（只動這兩樣；按「↶ 復原」可以回到按之前）。"""
@@ -1106,11 +1212,15 @@ class App:
             for k, v in over.items():
                 r[k].set(v)
             r["mix"].set(mix)
+        pol = dict(st["polish"])
+        if "deess" in st:
+            pol["deess"] = st["deess"]
         if self.polish_group() == "dry":      # 無效果：不動無效果自己那組，記到效果那組（按說話、修音時用）
-            self.polish_sets["fx"].update({k: float(v) for k, v in st["polish"].items()})
+            self.polish_sets["fx"].update({k: float(v) for k, v in pol.items()})
         else:
-            for k, v in st["polish"].items():
-                self.polish[k].set(v)
+            self._polish_load({k: float(v) for k, v in pol.items()})
+        if "gate" in st:                       # 降噪是所有效果共用
+            self.gate.set(st["gate"])
         self._style_now = name
         self.apply()
         for k, b in self.style_btns.items():
