@@ -9,6 +9,8 @@ import traceback
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
+import updater
+
 import os as _os
 try:
     if _os.environ.get("PAPA_FORCE_PY"):
@@ -208,6 +210,8 @@ class App:
         self.setup_hotkeys()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.tick()
+        self._update_info = None
+        self.root.after(4000, lambda: self.check_update(silent=True))   # 打開後自動看一次有沒有新版
 
     # ------------------------------------------------------------ 設定
     def load_settings(self):
@@ -1107,6 +1111,12 @@ class App:
             self.scene_btns[name] = b
         tk.Button(bar, text="＋ 存目前設定", command=self.save_scene, bg="#2c4a63", fg=C_TXT, activebackground="#2c4a63",
                   relief="flat", font=(FONT, 9, "bold"), cursor="hand2", bd=0, padx=8, pady=2).pack(side="left", padx=(8, 4))
+        info = getattr(self, "_update_info", None)
+        ut = ("⬆ 有新版！按這裡更新" if info else "⬆ 檢查更新")
+        uc = C_YELLOW if info else C_BTN
+        self.btn_update = tk.Button(bar, text=ut, command=self.check_update, bg=uc, fg="#1b1b1b" if info else C_TXT,
+                                    activebackground=uc, relief="flat", font=(FONT, 9, "bold"), cursor="hand2", bd=0, padx=8, pady=2)
+        self.btn_update.pack(side="right", padx=4)
         if self.scenes:
             tk.Label(bar, text="按一下＝切換，右鍵＝覆蓋／改名／刪除", bg=bar["bg"], fg=C_SUB, font=(FONT, 8)).pack(side="left")
         else:
@@ -1406,6 +1416,74 @@ class App:
             self.eng.stop()
             self.start_engine(0)
             self.msg.config(text="耳機那條來不及處理，已調整緩衝（%d）。如果常出現，請關掉其他吃電腦資源的程式。" % self.block_now)
+
+    # ---- 一鍵更新
+    def check_update(self, silent=False):
+        """到 GitHub 看有沒有新版（背景執行，不會卡住聲音）。silent＝打開時自動檢查，沒新版就不吵。"""
+        import threading
+
+        def work():
+            try:
+                info = updater.check()
+                err = None
+            except Exception as ex:
+                info, err = None, ex
+            try:
+                self.root.after(0, lambda: self._after_check(info, err, silent))
+            except Exception:          # 視窗已經關了
+                pass
+        if not silent:
+            self.btn_update.config(text="⬆ 檢查中…")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_check(self, info, err, silent):
+        self._update_info = info
+        self.refresh_scene_bar()
+        if err is not None:
+            if not silent:
+                messagebox.showinfo("檢查更新", "連不到更新網站，等一下再試。\n（%s）" % str(err)[:120])
+            return
+        if info is None:
+            if not silent:
+                messagebox.showinfo("檢查更新", "已經是最新版了（第 %d 版）。" % updater.VERSION
+                                    if updater.VERSION else "已經是最新版了。")
+            return
+        if silent:
+            self.msg.config(text="⬆ 有新版（第 %d 版）！按右上角「有新版！按這裡更新」。直播中可以等下播再更新。" % info["version"], fg=C_YELLOW)
+            return
+        self._do_update(info)
+
+    def _do_update(self, info):
+        if not updater.can_self_update():
+            messagebox.showinfo("檢查更新", "有新版（第 %d 版），但現在是用原始碼開的，不能自動更新。" % info["version"])
+            return
+        notes = info["notes"][:400] or "（沒有說明）"
+        if not messagebox.askyesno("有新版：第 %d 版" % info["version"],
+                                   "這次更新：\n%s\n\n現在更新嗎？\nPAPA 會先關掉、換好後自動重新打開（約 10～30 秒），"
+                                   "設定都會保留。\n⚠ 直播中聲音會中斷，建議下播再更新。" % notes):
+            return
+        import threading
+
+        def prog(got, total):
+            t = "⬇ 下載中 %d%%" % (got * 100 // total) if total else "⬇ 下載中 %.0f MB" % (got / 1e6)
+            self.root.after(0, lambda: self.btn_update.config(text=t))
+
+        def work():
+            try:
+                path = updater.download(info["url"], prog)
+                self.root.after(0, lambda: self._finish_update(path))
+            except Exception as ex:
+                self.root.after(0, lambda: (messagebox.showerror("更新失敗", "下載沒有成功，請再試一次。\n（%s）" % str(ex)[:120]),
+                                            self.refresh_scene_bar()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_update(self, path):
+        try:
+            updater.launch_swap(path)
+        except Exception as ex:
+            messagebox.showerror("更新失敗", str(ex)[:200])
+            return
+        self.on_close()            # 存好設定、停掉聲音、關掉；換檔程式會自動重新打開新版
 
     def on_close(self):
         try:

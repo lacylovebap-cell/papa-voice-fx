@@ -5,3 +5,4 @@ dist/
 *.spec
 build/
 *.so
+version.py

@@ -9,6 +9,8 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write     # 發佈新版（Release）給 PAPA 的「檢查更新」用
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,6 +33,7 @@ jobs:
         run: |
           python test_dsp.py
           python test_engine.py
+          python test_updater.py
           $env:PAPA_FORCE_PY="1"; python test_gui.py; $env:PAPA_FORCE_PY=""
           python test_gui_native.py
       - name: 畫面截圖（檢查版面用）
@@ -43,6 +46,9 @@ jobs:
         with:
           name: screenshots
           path: shots/
+      - name: 寫入版本編號
+        shell: pwsh
+        run: '"VERSION = ${{ github.run_number }}" | Out-File -Encoding utf8 version.py'
       - name: 打包 exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed --name PaPaVoiceFx
@@ -60,3 +66,11 @@ jobs:
         with:
           name: PaPaVoiceFx-exe
           path: dist/PaPaVoiceFx.exe
+      - name: 發佈新版（PAPA 按「檢查更新」就會抓這個）
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git log -1 --pretty=%B | Out-File -Encoding utf8 notes.txt
+          gh release create "v${{ github.run_number }}" dist/PaPaVoiceFx.exe --title "PAPA 調音台 第 ${{ github.run_number }} 版" --notes-file notes.txt --latest
