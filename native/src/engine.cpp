@@ -42,47 +42,92 @@ static std::string hw_key(const char* name) {
     return s;
 }
 
+// 第 2 版（修「導進來就帶電」）：舊版每個區塊都照「當下」緩衝量決定速度，兩張卡的區塊時間一錯開，
+// 速度就在 ±0.5% 之間跳來跳去 → 音高每 10 毫秒抖一次（像電音／金屬感），原聲也逃不掉。
+// 新版：緩衝量先平均、速度慢慢改（每秒最多 0.2%，耳朵聽不出來），內插改成三次（高音不會一閃一閃）。
 struct Ring {
+    static constexpr double KP = 1e-5;     // 緩衝多 1 個樣本 → 速度差多少
+    static constexpr double MAXR = 0.005;  // 速度最多差 0.5%（只有時脈差很多時才會用到）
+    static constexpr double SLEW = 0.002;  // 速度每秒最多改變多少
     std::vector<float> buf;
     size_t cap, r = 0, w = 0, n = 0;
     double frac = 0;
     bool primed = false, fade_in = false;
     long underruns = 0;
+    size_t wmax = 0;                       // 寫入一次最多幾個樣本
+    double lo = 0, hi = 0, avg = 0;        // 讀取時緩衝量的低點／高點／平均（都慢慢變）
+    double dr = 0;                         // 目前的速度差（ratio - 1）
+    size_t extra = 0;                      // 斷過就多存一點
     std::mutex m;
     explicit Ring(size_t c = 1 << 16) : buf(c, 0.f), cap(c) {}
-    void clear() { std::lock_guard<std::mutex> g(m); r = w = n = 0; frac = 0; primed = false; }
+    void clear() {
+        std::lock_guard<std::mutex> g(m);
+        r = w = n = 0; frac = 0; primed = false; fade_in = false;
+        wmax = 0; lo = hi = avg = 0; dr = 0; extra = 0;
+    }
     void write(const float* x, size_t k) {
         std::lock_guard<std::mutex> g(m);
+        if (k > wmax) wmax = k;
         if (k >= cap) { x += k - cap; k = cap; }
         if (n + k > cap) { size_t over = n + k - cap; r = (r + over) % cap; n -= over; }
         for (size_t i = 0; i < k; i++) { buf[w] = x[i]; w = (w + 1) % cap; }
         n += k;
     }
-    // 讀 m 個樣本，以 target 為目標緩衝量
+    // 讀取當下緩衝量的最低要求：這次要讀的量＋1 ms 餘裕；
+    // 兩邊區塊時間剛好一樣（低點高點差不多）時，再多留一個寫入區塊（兩邊順序對調時才不會斷）
+    double floor_target(size_t mcount) const {
+        double spread = hi - lo;
+        return (double)mcount + 48.0 + (double)extra + std::max(0.0, (double)wmax - spread);
+    }
+    void drop_to(size_t keep) {
+        if (n <= keep) return;
+        size_t d = n - keep; r = (r + d) % cap; n -= d;
+    }
+    inline float at(size_t i) const { return buf[i % cap]; }
+    // 讀 m 個樣本；target＝呼叫的人希望的平均緩衝量（下限）
     void read(float* out, size_t mcount, size_t target) {
         std::lock_guard<std::mutex> g(m);
+        const double dt = (double)mcount / SR;
         if (!primed) {
-            if (n < target + mcount) { std::fill(out, out + mcount, 0.f); return; }
+            double S = std::max((double)target, (double)mcount + 48.0 + (double)extra + (double)wmax);
+            if ((double)n < S) { std::fill(out, out + mcount, 0.f); return; }
             primed = true; fade_in = true;   // 重新開始：慢慢淡入，不會「啵」一下
+            if ((double)n > S) drop_to((size_t)S);   // 開始時存太多：先跳掉（這時還沒出聲），不用之後慢慢追
+            lo = hi = avg = (double)n;
         }
-        if (n < mcount + 4) {
+        if ((double)n < (double)mcount * (1.0 + std::fabs(dr)) + 4.0) {
             size_t k = std::min(n > 0 ? n - 1 : 0, mcount);
             for (size_t i = 0; i < k; i++) { out[i] = buf[r] * (1.f - (float)i / (float)std::max<size_t>(k, 1)); r = (r + 1) % cap; }
             n -= k;
             std::fill(out + k, out + mcount, 0.f);
             underruns++;
             primed = false;
+            extra = std::min<size_t>(extra + 64, 960);
             return;
         }
-        if (n > target * 4 + mcount) { size_t drop = n - target; r = (r + drop) % cap; n -= drop; }
-        double ratio = 1.0 + std::max(-0.005, std::min(0.005, ((double)n - (double)target) / std::max<double>(target, 1) * 0.005));
+        double S = std::max((double)target, floor_target(mcount));
+        if ((double)n > 4.0 * S + 2.0 * (double)wmax + (double)mcount) {   // 累積太多（裝置卡住後一次湧進來）：跳過
+            drop_to((size_t)S);
+            lo = hi = avg = (double)n;
+        }
+        double x = (double)n;
+        double a2 = 1.0 - std::exp(-dt / 2.0), a5 = 1.0 - std::exp(-dt / 0.5);
+        lo = x < lo ? x : lo + (x - lo) * a2;     // 低點：往下立刻跟，往上慢慢跟
+        hi = x > hi ? x : hi + (x - hi) * a2;
+        avg += (x - avg) * a5;
+        double e = std::min(avg - (double)target, lo - floor_target(mcount));
+        double want = std::max(-MAXR, std::min(MAXR, KP * e));
+        double step = SLEW * dt;
+        dr += std::max(-step, std::min(step, want - dr));
+        const double ratio = 1.0 + dr;
         double pos = frac;
         for (size_t i = 0; i < mcount; i++) {
             size_t i0 = (size_t)pos;
-            double fr = pos - (double)i0;
-            if (i0 + 1 >= n) { i0 = n >= 2 ? n - 2 : 0; fr = 0; }
-            float a = buf[(r + i0) % cap], b = buf[(r + i0 + 1) % cap];
-            out[i] = (float)(a * (1 - fr) + b * fr);
+            double t = pos - (double)i0;
+            size_t b = r + i0 + cap;               // +cap：往前一格（i0-1）也不會變負數
+            double y0 = at(b - 1), y1 = at(b), y2 = at(b + 1), y3 = at(b + 2);
+            double c1 = 0.5 * (y2 - y0), c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3, c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+            out[i] = (float)(((c3 * t + c2) * t + c1) * t + y1);
             pos += ratio;
         }
         if (fade_in) { for (size_t i = 0; i < mcount; i++) out[i] *= (float)i / (float)mcount; fade_in = false; }
@@ -754,4 +799,33 @@ PAPA_API long papa_test_bgm_sim(int block, int r, int w, double ppm, double secs
         tr += dr;
     }
     return under;
+}
+
+// 測試用：1 kHz 正弦波經過對時緩衝（寫入每次 w、讀取每次 r，時鐘差 ppm，每次回呼時間有 jit 秒的抖動，不累積），
+// 把讀出來的聲音放進 out，回傳樣本數（拿來量音高有沒有在抖）。*under 回傳後半段斷掉次數。
+PAPA_API int papa_test_ring_tone(int r, int w, double ppm, double secs, double jit, int target, float* out, int cap, long* under) {
+    Ring ring(1 << 16);
+    std::vector<float> in(w), o(r);
+    unsigned long long seed = 88172645463325252ULL;
+    auto rnd = [&]() { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return (double)(seed % 1000003) / 1000003.0; };
+    const double pw = (double)w / SR, pr = (double)r / SR * (1 + ppm * 1e-6);
+    long kw = 0, kr = 0; double tw = pw + rnd() * jit, tr = pr * 0.5 + 0.0003 + rnd() * jit;
+    long nin = 0; int nout = 0; long u_half = -1;
+    while (true) {
+        double tn = std::min(tw, tr);
+        if (tn > secs) break;
+        if (tw <= tr) {
+            for (int i = 0; i < w; i++) in[i] = (float)std::sin(2 * PI * 1000.0 * (double)(nin + i) / SR);
+            nin += w;
+            ring.write(in.data(), (size_t)w);
+            kw++; tw = (kw + 1) * pw + rnd() * jit;
+        } else {
+            if (u_half < 0 && tr > secs / 2) u_half = ring.underruns;
+            ring.read(o.data(), (size_t)r, (size_t)target);
+            for (int i = 0; i < r && nout < cap; i++) out[nout++] = o[i];
+            kr++; tr = pr * 0.5 + 0.0003 + kr * pr + rnd() * jit;
+        }
+    }
+    if (under) *under = ring.underruns - std::max(0L, u_half);
+    return nout;
 }

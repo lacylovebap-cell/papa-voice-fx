@@ -34,7 +34,14 @@ def _now():
 
 
 class Ring:
-    """單一生產者/單一消費者的環形緩衝。超出時丟棄最舊的，不足時補 0。"""
+    """單一生產者/單一消費者的對時緩衝（和 native/src/engine.cpp 的 Ring 相同）。
+
+    第 2 版（修「導進來就帶電」）：舊版每個區塊都照「當下」緩衝量決定速度，兩張卡的區塊時間一錯開，
+    速度就在 ±0.5% 之間跳 → 音高每 10 毫秒抖一次（電電的）。新版緩衝量先平均、速度慢慢改，內插改成三次。
+    """
+    KP = 1e-5        # 緩衝多 1 個樣本 → 速度差多少
+    MAXR = 0.005     # 速度最多差 0.5%
+    SLEW = 0.002     # 速度每秒最多改變多少（很慢 → 聽不出音高在動）
 
     def __init__(self, cap):
         self.cap = cap
@@ -46,10 +53,28 @@ class Ring:
         self.underruns = 0
         self.frac = 0.0
         self.primed = False
+        self._fade_in = False
+        self.wmax = 0
+        self.lo = self.hi = self.avg = 0.0
+        self.dr = 0.0
+        self.extra = 0
+
+    def floor_target(self, m):
+        """讀取當下緩衝量的最低要求（兩邊區塊時間剛好一樣時多留一個寫入區塊）。"""
+        return m + 48.0 + self.extra + max(0.0, self.wmax - (self.hi - self.lo))
+
+    def _drop_to(self, keep):
+        keep = int(keep)
+        if self.n > keep:
+            d = self.n - keep
+            self.r = (self.r + d) % self.cap
+            self.n -= d
 
     def write(self, x):
         with self.lock:
             m = len(x)
+            if m > self.wmax:
+                self.wmax = m
             if m >= self.cap:
                 x = x[-self.cap:]
                 m = self.cap
@@ -63,14 +88,19 @@ class Ring:
             self.n += m
 
     def read(self, m, target):
-        """讀 m 個樣本。以極小幅度的重新取樣追蹤緩衝量，避免時脈飄移時整段丟棄或補零（會「啵」一聲）。"""
+        """讀 m 個樣本；target＝希望的平均緩衝量（下限）。速度只會很慢地微調，不會「啵」也不會抖。"""
         with self.lock:
+            dt = m / SR
             if not self.primed:
-                if self.n < target + m:          # 先存夠緩衝再開始播（只多約 2 個區塊延遲）
+                S = max(target, m + 48 + self.extra + self.wmax)
+                if self.n < S:                       # 先存夠緩衝再開始播
                     return np.zeros(m, np.float32)
                 self.primed = True
                 self._fade_in = True                 # 重新開始：慢慢淡入，不會「啵」一下
-            if self.n < m + 4:
+                if self.n > S:                       # 開始時存太多：先跳掉（這時還沒出聲），不用之後慢慢追
+                    self._drop_to(S)
+                self.lo = self.hi = self.avg = float(self.n)
+            if self.n < m * (1 + abs(self.dr)) + 4:
                 # 真的不夠：把剩下的淡出到 0，而不是突然變 0
                 out = np.zeros(m, np.float32)
                 k = min(max(0, self.n - 1), m)
@@ -81,20 +111,35 @@ class Ring:
                     self.n -= k
                 self.underruns += 1
                 self.primed = False
+                self.extra = min(self.extra + 64, 960)
                 return out
-            if self.n > target * 4:      # 累積過多（例如剛啟動）：一次性跳過，只會發生一次
-                drop = self.n - target
-                self.r = (self.r + drop) % self.cap
-                self.n -= drop
-            ratio = 1.0 + max(-0.005, min(0.005, (self.n - target) / max(target, 1) * 0.005))
+            S = max(target, self.floor_target(m))
+            if self.n > 4 * S + 2 * self.wmax + m:   # 累積太多（裝置卡住後一次湧進來）：跳過
+                self._drop_to(S)
+                self.lo = self.hi = self.avg = float(self.n)
+            x = float(self.n)
+            a2 = 1 - np.exp(-dt / 2.0)
+            a5 = 1 - np.exp(-dt / 0.5)
+            self.lo = x if x < self.lo else self.lo + (x - self.lo) * a2
+            self.hi = x if x > self.hi else self.hi + (x - self.hi) * a2
+            self.avg += (x - self.avg) * a5
+            e = min(self.avg - target, self.lo - self.floor_target(m))
+            want = max(-self.MAXR, min(self.MAXR, self.KP * e))
+            step = self.SLEW * dt
+            self.dr += max(-step, min(step, want - self.dr))
+            ratio = 1.0 + self.dr
             pos = self.frac + np.arange(m) * ratio
-            need = int(np.floor(pos[-1])) + 2
-            need = min(need, self.n)
-            idx = (self.r + np.arange(need)) % self.cap
-            seg = self.buf[idx]
-            i0 = np.minimum(np.floor(pos).astype(np.int64), need - 2)
-            fr = pos - i0
-            out = (seg[i0] * (1 - fr) + seg[i0 + 1] * fr).astype(np.float32)
+            i0 = np.floor(pos).astype(np.int64)
+            t = pos - i0
+            b = (self.r + i0) % self.cap
+            y0 = self.buf[(b - 1) % self.cap].astype(np.float64)
+            y1 = self.buf[b].astype(np.float64)
+            y2 = self.buf[(b + 1) % self.cap].astype(np.float64)
+            y3 = self.buf[(b + 2) % self.cap].astype(np.float64)
+            c1 = 0.5 * (y2 - y0)
+            c2 = y0 - 2.5 * y1 + 2 * y2 - 0.5 * y3
+            c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
+            out = (((c3 * t + c2) * t + c1) * t + y1).astype(np.float32)
             adv = pos[-1] + ratio
             used = int(np.floor(adv))
             self.frac = adv - used

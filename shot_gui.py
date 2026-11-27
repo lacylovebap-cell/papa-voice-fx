@@ -26,6 +26,7 @@ a.preset("electro")
 a.rv[1]["type"].set("大廳"); a.on_reverb_type(1)
 a.alpha.set(100); a.apply()
 a.swap_style("爵士", "破碎感"); a.swap_style("搖滾", "御姐說唱")
+a.save_custom_style("怕怕一")
 
 
 def shot(name, win=None):
@@ -59,5 +60,8 @@ a.mini.show(); a.mini.win.geometry("+40+40")
 for _ in range(30):
     a.tick() if hasattr(a, "_tick_once") else None
 shot("7_mini", a.mini.win)
+a.mini.set_scale(1.6); a.mini.win.geometry("+40+40")
+shot("8_mini_big", a.mini.win)
+a.mini.set_scale(1.0)
 a.mini.expand()
 a.on_close()

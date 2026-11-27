@@ -5,6 +5,7 @@ import tempfile
 import time
 import wave
 
+import ctypes
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -98,7 +99,28 @@ for blk in (64, 256, 512):
 for r, w in ((128, 128), (128, 480), (480, 480), (480, 128), (512, 480)):
     n_new = ne.LIB.papa_test_bgm_sim(128, r, w, 80.0, 30.0, 1)
     check("伴奏不斷：耳機每次 %d、伴奏每次 %d" % (r, w), n_new == 0, "斷 %d 次" % n_new)
-check("舊的固定緩衝在 Realtek 情況會斷（測試有效）", ne.LIB.papa_test_bgm_sim(128, 480, 480, 80.0, 30.0, 0) > 0)
+check("對時緩衝自己會留夠：就算給很小的固定緩衝也不會斷", ne.LIB.papa_test_bgm_sim(128, 480, 480, 80.0, 30.0, 0) == 0)
+
+
+# 對時緩衝不能讓音高抖（舊版每 10 毫秒就調一次速度，音高抖 0.2～1.5%，聽起來電電的）
+def ring_flutter(r, w, ppm, target=256, secs=12.0, jit=0.0004):
+    cap = 48000 * int(secs + 2)
+    buf = (ctypes.c_float * cap)()
+    u = ctypes.c_long(0)
+    n = ne.LIB.papa_test_ring_tone(r, w, ppm, secs, jit, target, buf, cap, ctypes.byref(u))
+    y = np.frombuffer(buf, np.float32, n).astype(np.float64)[48000 * 6:]
+    t = np.arange(len(y)) / 48000
+    z = np.convolve(y * np.exp(-2j * np.pi * 1000 * t), np.ones(48) / 48, mode="valid")
+    f = np.diff(np.unwrap(np.angle(z))) * 48000 / (2 * np.pi)
+    win = 48000 // 4
+    d = (f - np.convolve(f, np.ones(win) / win, mode="same"))[win:-win] / 1000 * 100
+    return float(np.percentile(np.abs(d), 99.5)), float(np.min(np.abs(z[win:-win]))), u.value
+
+
+for r, w, ppm in ((480, 480, 30), (480, 480, -30), (480, 128, 50), (128, 480, 50), (128, 128, 80), (480, 441, 100)):
+    fl, amp, un = ring_flutter(r, w, ppm)
+    check("對時緩衝音高不抖：讀 %d／寫 %d、時鐘差 %+d ppm" % (r, w, ppm), fl < 0.1 and amp > 0.45 and un == 0,
+          "抖動 %.3f%%、最小音量 %.2f、斷 %d 次" % (fl, amp, un))
 check("伴奏斷掉次數讀得到", e.bgm_underruns >= 0 and e.bgm_buffer_ms > 0, "%.1f ms" % e.bgm_buffer_ms)
 # 唱歌當下（耳機）、存檔（直播混音）一樣大：總音量一起變、耳機拉超過 100% 也不會比存檔大聲
 ne.LIB.papa_set(b"g_master", 2.0); ne.LIB.papa_set(b"g_mon", 4.0); ne.LIB.papa_set(b"g_out", 0.5)

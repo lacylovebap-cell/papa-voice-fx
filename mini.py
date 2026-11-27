@@ -1,7 +1,8 @@
 """縮小版（迷你調音台）：很小的一個視窗，可以「置頂」永遠在最上面。
 
 放的東西（照怕怕的需求）：
-- 麥克風／耳機／直播三條小聲波
+- 麥克風／耳機／直播／伴奏四條小聲波
+- 可以拉視窗邊邊放大縮小（整個等比例放大，字、按鈕、聲波一起變）
 - 試聽：原本／直播／外放
 - 拉桿（每條前後都有 −／＋）：伴奏、耳機伴奏、耳機混響、整體混響
 - 效果：無效果、說話、修音、電音、電話、答錄機、機器人
@@ -17,6 +18,7 @@ MINI_FX = [("無", None), ("說話", "talk"), ("修音", "sing"), ("電音", "el
            ("電話", "phone"), ("答錄", "machine"), ("機器", "robot")]
 MINI_OC_DEFAULT = ["CD", "流行", "甜歌", "抒情", "古風"]
 MINI_OC_SLOTS = 5
+MINI_SCALE_MIN, MINI_SCALE_MAX = 0.8, 3.0
 
 
 class MiniWindow:
@@ -28,6 +30,71 @@ class MiniWindow:
         self.fx_btns = {}
         self.oc_btns = {}
         self.lis_btns = []
+        self._resize_job = None
+        self._base = None          # 放大 1 倍時的大小（寬, 高）
+
+    # ---- 等比例放大縮小
+    @property
+    def k(self):
+        try:
+            return max(MINI_SCALE_MIN, min(MINI_SCALE_MAX, float(self.app.mini_scale.get())))
+        except Exception:
+            return 1.0
+
+    def px(self, n):
+        return max(1, int(round(n * self.k)))
+
+    def font(self, bold=False):
+        f = (self.A.FONT, max(7, int(round(MINI_FONT * self.k))))
+        return f + ("bold",) if bold else f
+
+    def _on_configure(self, e):
+        if e.widget is not self.win or self._base is None:
+            return
+        if self._resize_job:
+            self.win.after_cancel(self._resize_job)
+        self._resize_job = self.win.after(250, self._resize_done)   # 放開滑鼠後才重新排（拉的時候不會一直閃）
+
+    def _resize_done(self):
+        self._resize_job = None
+        if not self.shown or self._base is None:
+            return
+        w, h = self.win.winfo_width(), self.win.winfo_height()
+        bw, bh = self._base
+        k0 = self.k
+        sw, sh = w / max(1, bw), h / max(1, bh)
+        k = sw if abs(sw - k0) >= abs(sh - k0) else sh                       # 看哪一邊拉得比較多
+        k = max(MINI_SCALE_MIN, min(MINI_SCALE_MAX, k))
+        if abs(k - k0) < 0.04:
+            if abs(w - self.win.winfo_reqwidth()) > 2 or abs(h - self.win.winfo_reqheight()) > 2:
+                self._fit()          # 拉一點點：彈回剛好的大小
+            return
+        self.set_scale(k)
+
+    def set_scale(self, k):
+        """整個縮小版等比例放大縮小（k＝倍數，1＝原本大小）。"""
+        self.app.mini_scale.set(round(max(MINI_SCALE_MIN, min(MINI_SCALE_MAX, k)), 2))
+        if not self.shown:
+            return
+        for c in self.win.winfo_children():
+            if not isinstance(c, tk.Toplevel):
+                c.destroy()
+        self._build()
+        self.set_pin(bool(self.app.mini_pin.get()))
+        self.refresh()
+        self._fit()
+        self.app.schedule_save()
+
+    def _fit(self):
+        """視窗大小剛好包住內容（保持比例）。"""
+        import re
+        w = self.win
+        w.update_idletasks()
+        try:
+            m = re.match(r"\d+x\d+([+-]-?\d+[+-]-?\d+)", w.geometry())     # 位置不變（還沒顯示時 winfo_x 會是 0）
+            w.geometry("%dx%d%s" % (w.winfo_reqwidth(), w.winfo_reqheight(), m.group(1) if m else ""))
+        except Exception:
+            pass
 
     # ---- 開／關
     @property
@@ -42,7 +109,7 @@ class MiniWindow:
         w = self.win = tk.Toplevel(a.root)
         w.title("PAPA")
         w.configure(bg=A.C_BG)
-        w.resizable(False, False)
+        w.resizable(True, True)          # 拉邊邊＝整個等比例放大縮小
         w.protocol("WM_DELETE_WINDOW", self.expand)       # 關掉縮小版＝回到完整版（不是關掉程式）
         try:
             w.iconbitmap(default="")
@@ -58,6 +125,11 @@ class MiniWindow:
         self.set_pin(bool(a.mini_pin.get()))
         a.root.withdraw()
         self.refresh()
+        w.update_idletasks()
+        k = self.k
+        self._base = (w.winfo_reqwidth() / k, w.winfo_reqheight() / k)
+        self._fit()
+        w.bind("<Configure>", self._on_configure)
 
     def expand(self):
         """回到完整版。"""
@@ -83,32 +155,33 @@ class MiniWindow:
         A = self.A
         b = tk.Button(parent, text=text, command=cmd, bg=A.C_BTN, fg=A.C_TXT, activebackground=A.C_ACCENT,
                       activeforeground=A.C_DARKTXT, relief="flat", bd=0, padx=1, pady=0, cursor="hand2",
-                      font=(A.FONT, MINI_FONT), highlightthickness=0, **kw)
+                      font=self.font(), highlightthickness=0, **kw)
         if w:
             b.config(width=w)
         return b
 
     def _lbl(self, parent, text, **kw):
         A = self.A
-        return tk.Label(parent, text=text, bg=A.C_BG, fg=A.C_SUB, font=(A.FONT, MINI_FONT), padx=0, pady=0, **kw)
+        return tk.Label(parent, text=text, bg=A.C_BG, fg=A.C_SUB, font=self.font(), padx=0, pady=0, **kw)
 
     def _build(self):
         a, A, w = self.app, self.A, self.win
         # 標題列：PAPA、錄音、置頂、展開
         tb = tk.Frame(w, bg=A.C_DEEP)
         tb.pack(fill="x")
-        tk.Label(tb, text="PAPA", bg=A.C_DEEP, fg=A.C_TXT, font=(A.FONT, MINI_FONT, "bold")).pack(side="left", padx=(3, 0))
+        tk.Label(tb, text="PAPA", bg=A.C_DEEP, fg=A.C_TXT, font=self.font(True)).pack(side="left", padx=(3, 0))
         self.btn_expand = self._btn(tb, "⤢", self.expand, w=2)
         self.btn_expand.pack(side="right", padx=1, pady=1)
         self.btn_pin = self._btn(tb, "📌", lambda: self.set_pin(not a.mini_pin.get()), w=2)
         self.btn_pin.pack(side="right", padx=1, pady=1)
-        self.rec_time = tk.Label(tb, text="", bg=A.C_DEEP, fg=A.C_PINK, font=(A.FONT, MINI_FONT), width=5)
+        self.rec_time = tk.Label(tb, text="", bg=A.C_DEEP, fg=A.C_PINK, font=self.font(), width=5)
         self.rec_time.pack(side="right")
         # 錄音：小圓鈕
-        self.rec_cv = tk.Canvas(tb, width=13, height=13, bg=A.C_DEEP, highlightthickness=0, cursor="hand2")
+        P = self.px
+        self.rec_cv = tk.Canvas(tb, width=P(13), height=P(13), bg=A.C_DEEP, highlightthickness=0, cursor="hand2")
         self.rec_cv.pack(side="right", padx=1)
-        self.rec_dot = self.rec_cv.create_oval(1, 1, 12, 12, fill=A.C_BTN, outline="")
-        self.rec_in = self.rec_cv.create_oval(4, 4, 9, 9, fill=A.C_PINK, outline="")
+        self.rec_dot = self.rec_cv.create_oval(P(1), P(1), P(12), P(12), fill=A.C_BTN, outline="")
+        self.rec_in = self.rec_cv.create_oval(P(4), P(4), P(9), P(9), fill=A.C_PINK, outline="")
         self.rec_cv.bind("<Button-1>", lambda e: a.toggle_rec())
 
         body = tk.Frame(w, bg=A.C_BG)
@@ -116,12 +189,12 @@ class MiniWindow:
         left = tk.Frame(body, bg=A.C_BG)
         left.pack(side="left", anchor="n")
         self.waves = {}
-        for k, name, col in (("inp", "麥", A.C_CYAN), ("mon", "耳", A.C_GREEN), ("out", "播", A.C_PINK)):
+        for k, name, col in (("inp", "麥", A.C_CYAN), ("mon", "耳", A.C_GREEN), ("out", "播", A.C_PINK), ("bgm", "伴", A.C_YELLOW)):
             r = tk.Frame(left, bg=A.C_BG)
             r.pack(fill="x", pady=0)
             self._lbl(r, name, width=2).pack(side="left")
-            wv = A.Wave(r, col, w=66, h=9)
-            wv.itemconfig(wv.line, width=1)
+            wv = A.Wave(r, col, w=P(66), h=P(9))
+            wv.itemconfig(wv.line, width=1 if self.k < 1.6 else 2)
             wv.pack(side="left", pady=1)
             self.waves[k] = wv
         lr = tk.Frame(left, bg=A.C_BG)
@@ -141,7 +214,7 @@ class MiniWindow:
             r.pack(fill="x")
             self._lbl(r, name, width=3, anchor="w").pack(side="left")
             self._btn(r, "−", lambda v=var, lo=lo, hi=hi: self.nudge(v, -1, lo, hi), w=1).pack(side="left")
-            ttk.Scale(r, from_=lo, to=hi, variable=var, orient="horizontal", length=62,
+            ttk.Scale(r, from_=lo, to=hi, variable=var, orient="horizontal", length=P(62),
                       command=lambda _v: a.apply()).pack(side="left", padx=1)
             self._btn(r, "+", lambda v=var, lo=lo, hi=hi: self.nudge(v, +1, lo, hi), w=1).pack(side="left")
             vl = self._lbl(r, "", width=4, anchor="e")
@@ -172,13 +245,18 @@ class MiniWindow:
     # ---- 一鍵（縮小版自己的 5 個）
     def oc_visible(self):
         try:
-            v = [k for k in json.loads(self.app.mini_oc_var.get() or "[]") if k in self.A.ONE_CLICK]
+            allst = self.app.all_styles()
+            v = [k for k in json.loads(self.app.mini_oc_var.get() or "[]") if k in allst]
         except Exception:
             v = []
         return (v or list(MINI_OC_DEFAULT))[:MINI_OC_SLOTS]
 
     def set_oc_visible(self, names):
-        self.app.mini_oc_var.set(json.dumps([k for k in names if k in self.A.ONE_CLICK][:MINI_OC_SLOTS], ensure_ascii=False))
+        allst = self.app.all_styles()
+        self.app.mini_oc_var.set(json.dumps([k for k in names if k in allst][:MINI_OC_SLOTS], ensure_ascii=False))
+        self.refresh_oc()
+
+    def refresh_oc(self):
         if self.shown:
             self._build_oc()
 
@@ -202,7 +280,7 @@ class MiniWindow:
         if self.app.mini_pin.get():
             m.attributes("-topmost", True)
         tk.Label(m, text="按一下＝放上去／拿掉（最多 %d 個）" % MINI_OC_SLOTS, bg=A.C_CARD, fg=A.C_SUB,
-                 font=(A.FONT, MINI_FONT)).pack(anchor="w", padx=4, pady=(3, 1))
+                 font=self.font()).pack(anchor="w", padx=4, pady=(3, 1))
         g = tk.Frame(m, bg=A.C_CARD)
         g.pack(padx=4, pady=(0, 4))
         order = list(self.oc_visible())
@@ -219,7 +297,7 @@ class MiniWindow:
                 order.append(k)
             paint()
             self.set_oc_visible(order)
-        for n, k in enumerate(A.ONE_CLICK):
+        for n, k in enumerate(self.app.all_styles()):
             b = self._btn(g, k, lambda kk=k: tog(kk))
             b.grid(row=n // 4, column=n % 4, sticky="ew", padx=1, pady=1)
             btns[k] = b

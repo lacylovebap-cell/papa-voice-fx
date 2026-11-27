@@ -142,14 +142,21 @@ ONE_CLICK = {
                 rv=[("CD 絲滑板式", 17, dict(size=75, bright=45, pre=25)), ("大廳", 7, dict(size=85, bright=40, pre=40, lowcut=200))],
                 polish=dict(loud=45, clarity=70, thick=30, widen=70, duck=30), deess=60, gate=30),
     "御姐說唱": dict(desc="御姐網感說唱：很乾、貼耳朵、穩又有力，刺耳的地方壓掉",
-                 rv=[("房間", 3, dict(size=35, bright=45, pre=0, lowcut=300))],
+                 rv=[("房間", 5, dict(size=35, bright=45, pre=0, lowcut=300))],
                  polish=dict(loud=75, clarity=45, thick=45, widen=25, duck=45), deess=55, gate=35),
     "清唱": dict(desc="沒有伴奏時用：混響多一點，把空間補起來",
                rv=[("人聲板", 20, dict(size=70, bright=55, pre=20)), ("大廳", 10, dict(size=85, bright=45, pre=35))],
                polish=dict(loud=50, clarity=45, thick=30, widen=60, duck=0)),
 }
 DRY_POLISH = dict(loud=0.0, clarity=0.0, thick=0.0, widen=0.0, duck=0.0, deess=0.0)   # 無效果預設：乾淨、什麼都不加（連去齒音也不加）
-ONE_CLICK_SLOTS = 10      # 一鍵區顯示幾個按鈕（其他的在「更多」裡）
+ONE_CLICK_SLOTS = 16      # 一鍵區：一排 4 個、最多 4 排（沒放東西的是「＋」空白格，可以存自己調的）
+ONE_CLICK_COLS = 4
+CUSTOM_NAME_MAX = 8       # 自己取的一鍵名字：最多 4 個中文字（或 8 個英文／數字），按鈕才放得下
+
+
+def name_width(s):
+    """中文字算 2、英文數字算 1。"""
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
 ONE_CLICK_DEFAULT = ["CD", "流行", "甜歌", "抒情", "悲傷", "古風", "說唱", "搖滾", "爵士", "清唱"]
 
 BGM_HELP = """伴奏怎麼接（只要設定一次）：
@@ -307,9 +314,11 @@ class App:
         self.g_monbgm = self.var("g_monbgm", 100, D)    # 只有耳機裡的伴奏（抓節拍用），直播和錄音不變
         self.g_monrv = self.var("g_monrv", 100, D)
         self.oc_visible_var = self.var("oneclick_visible", "")          # 一鍵區要顯示哪些按鈕
+        self.oc_custom_var = self.var("oneclick_custom", "")            # 自己調好、取名字存起來的一鍵
         self.g_rvall = self.var("g_rvall", 100, D)          # 整體混響：A／B／C 一起按比例放大縮小（100%＝原樣）
         self.mini_pin = self.var("mini_pin", 1, tk.IntVar)   # 縮小版置頂（永遠在最上面）
         self.mini_geo = self.var("mini_geo", "")             # 縮小版上次的位置
+        self.mini_scale = self.var("mini_scale", 1.0, tk.DoubleVar)   # 縮小版放大幾倍（拉邊邊等比例放大縮小）
         self.mini_oc_var = self.var("mini_oneclick", "")     # 縮小版自己的 5 個一鍵      # 只有耳機裡的混響（混響會拖拍，可以自己聽小一點），直播和錄音不變
         self.mon_mix_v3 = self.var("mon_mix_v3", 0, tk.IntVar)
         self._mon_migrated = False
@@ -671,7 +680,12 @@ class App:
         fixed.columnconfigure(5, weight=1)
         pol = tk.Frame(fixed, bg=C_CARD)
         pol.grid(row=0, column=6, rowspan=4, sticky="ne", padx=(6, 0))
-        self.label(pol, "🎤 人聲質感", 9, C_TXT, True).grid(row=0, column=0, columnspan=3, sticky="w")
+        ph = tk.Frame(pol, bg=C_CARD)
+        ph.grid(row=0, column=0, columnspan=4, sticky="w")
+        self.label(ph, "🎤 人聲質感", 9, C_TXT, True).pack(side="left")
+        self.btn_polish_reset = self.button(ph, "↺ 歸零", self.reset_polish, size=8)
+        self.btn_polish_reset.config(pady=1, padx=6)
+        self.btn_polish_reset.pack(side="left", padx=(8, 0))
         for n, (k, var) in enumerate((("loud", self.polish["loud"]), ("clarity", self.polish["clarity"]),
                                       ("thick", self.polish["thick"]), ("deess", self.deess), ("gate", self.gate))):
             r, c = 2 + n, 0          # 疊成一欄（讓出位置給左邊的一鍵按鈕）
@@ -693,7 +707,6 @@ class App:
         self.btn_dehum = tk.Checkbutton(pb, text="🔌 去電流聲", variable=self.dehum, command=self.apply, bg=C_CARD, fg=C_TXT,
                                         selectcolor=C_DEEP, activebackground=C_CARD, activeforeground=C_TXT, font=(FONT, 8))
         self.btn_dehum.pack(side="left", padx=(0, 4))
-        self.button(pb, "↺ 歸零", self.reset_polish, size=8).pack(side="left")
         self.button(pb, "⚙", lambda: self.open_mixer("polish"), size=8).pack(side="left", padx=(4, 0))
         self.fx_note = self.label(fx, "", 8, C_SUB, anchor="w")
         self.fx_note.pack(fill="x", pady=(4, 0))
@@ -1165,45 +1178,186 @@ class App:
         self.apply_style("CD")
 
     # ---- 一鍵專區
+    def custom_styles(self):
+        """自己調好、取名字存起來的一鍵（名字 → 設定）。"""
+        try:
+            d = json.loads(self.oc_custom_var.get() or "{}")
+        except Exception:
+            d = {}
+        return {k: v for k, v in d.items() if isinstance(v, dict) and isinstance(v.get("rv_full"), list) and k not in ONE_CLICK}
+
+    def _store_custom(self, d):
+        self.oc_custom_var.set(json.dumps(d, ensure_ascii=False))
+        self.schedule_save()
+
+    def all_styles(self):
+        d = dict(ONE_CLICK)
+        d.update(self.custom_styles())
+        return d
+
     def style_visible(self):
         """一鍵區要顯示的按鈕（可以自己換；存在設定裡）。"""
+        allst = self.all_styles()
         try:
-            v = [k for k in json.loads(self.oc_visible_var.get() or "[]") if k in ONE_CLICK]
+            v = [k for k in json.loads(self.oc_visible_var.get() or "[]") if k in allst]
         except Exception:
             v = []
-        if not v:
+        if not v and not self.oc_visible_var.get().strip().startswith("[]"):
             v = list(ONE_CLICK_DEFAULT)
         return v[:ONE_CLICK_SLOTS]
 
     def set_style_visible(self, names):
-        self.oc_visible_var.set(json.dumps([k for k in names if k in ONE_CLICK][:ONE_CLICK_SLOTS], ensure_ascii=False))
+        allst = self.all_styles()
+        seen = []
+        for k in names:
+            if k in allst and k not in seen:
+                seen.append(k)
+        self.oc_visible_var.set(json.dumps(seen[:ONE_CLICK_SLOTS], ensure_ascii=False))
         self._build_style_grid()
+        self.schedule_save()
 
     def _build_style_grid(self):
         grid = self.style_grid
         for w in grid.winfo_children():
             w.destroy()
         self.style_btns = {}
+        self.style_blanks = []
         vis = self.style_visible()
+        custom = self.custom_styles()
         wch = max(4, min(7, int(1.6 * max([len(k) for k in vis] or [2])) + 1))   # 中文字比較寬：照最長的名字放寬，字不會被切掉
-        for n, name in enumerate(vis):
-            on = name == getattr(self, "_style_now", None)
-            b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_ACCENT if on else C_BTN, fg=C_TXT,
-                          activebackground=C_ACCENT, relief="flat", font=(FONT, 8, "bold"), cursor="hand2", bd=0,
-                          width=wch, padx=2, pady=1)
-            b.grid(row=n // 5, column=n % 5, padx=1, pady=1)
-            b.bind("<Button-3>", lambda e, k=name: self.style_swap_menu(k, e))
-            self.style_btns[name] = b
+        for n in range(ONE_CLICK_SLOTS):
+            row, col = divmod(n, ONE_CLICK_COLS)
+            if n < len(vis):
+                name = vis[n]
+                on = name == getattr(self, "_style_now", None)
+                b = tk.Button(grid, text=name, command=lambda k=name: self.apply_style(k), bg=C_ACCENT if on else C_BTN,
+                              fg=C_YELLOW if name in custom else C_TXT,
+                              activebackground=C_ACCENT, relief="flat", font=(FONT, 8, "bold"), cursor="hand2", bd=0,
+                              width=wch, padx=2, pady=1)
+                b.bind("<Button-3>", lambda e, k=name: self.style_swap_menu(k, e))
+                self.style_btns[name] = b
+            else:   # 空白格：按一下＝把目前調好的混響＋人聲質感存成自己的一鍵
+                b = tk.Button(grid, text="＋", command=self.custom_style_dialog, bg=C_DEEP, fg=C_SUB,
+                              activebackground=C_BTN, relief="flat", font=(FONT, 8), cursor="hand2", bd=0,
+                              width=wch, padx=2, pady=1)
+                self.style_blanks.append(b)
+            b.grid(row=row, column=col, padx=1, pady=1)
+
+    # ---- 自己的一鍵（空白格）
+    def _current_style_data(self):
+        """目前的混響 A／B／C（全部旋鈕）＋人聲質感＋降噪。"""
+        return dict(desc="自己調的（混響 A／B／C＋人聲質感）", custom=True,
+                    rv_full=[{k: r[k].get() for k in RV_FIELDS} for r in self.rv],
+                    polish=self._polish_now(), gate=float(self.gate.get()))
+
+    def _check_style_name(self, name, allow=None):
+        name = (name or "").strip()
+        if not name:
+            return name, "名字不能空白"
+        if name_width(name) > CUSTOM_NAME_MAX:
+            return name, "名字最多 4 個中文字（或 8 個英文／數字），按鈕才放得下"
+        if name != allow and name in self.all_styles():
+            return name, "已經有「%s」了，換一個名字" % name
+        return name, None
+
+    def save_custom_style(self, name):
+        """把目前的設定存成新的一鍵，放到下一個空白格。成功回傳 None，不行回傳原因。"""
+        name, err = self._check_style_name(name)
+        if err:
+            return err
+        vis = self.style_visible()
+        if len(vis) >= ONE_CLICK_SLOTS:
+            return "一鍵區滿了（%d 格），先在某個按鈕按右鍵「清空這格」" % ONE_CLICK_SLOTS
+        d = self.custom_styles()
+        d[name] = self._current_style_data()
+        self._store_custom(d)
+        self._style_now = name
+        self.set_style_visible(vis + [name])
+        self.msg.config(text="⭐ 已存成一鍵「%s」（混響 A／B／C＋人聲質感）。右鍵可以改名、覆蓋或刪掉。" % name, fg=C_SUB)
+        return None
+
+    def overwrite_custom_style(self, name):
+        d = self.custom_styles()
+        if name not in d:
+            return
+        d[name] = self._current_style_data()
+        self._store_custom(d)
+        self.msg.config(text="⭐ 一鍵「%s」已換成目前的設定。" % name, fg=C_SUB)
+
+    def rename_custom_style(self, old, new):
+        d = self.custom_styles()
+        if old not in d:
+            return "找不到「%s」" % old
+        new, err = self._check_style_name(new, allow=old)
+        if err:
+            return err
+        if new == old:
+            return None
+        d = {(new if k == old else k): v for k, v in d.items()}
+        self._store_custom(d)
+        self.oc_visible_var.set(json.dumps([new if k == old else k for k in json.loads(self.oc_visible_var.get() or "[]")],
+                                           ensure_ascii=False))
+        try:
+            self.mini_oc_var.set(json.dumps([new if k == old else k for k in json.loads(self.mini_oc_var.get() or "[]")],
+                                            ensure_ascii=False))
+        except Exception:
+            pass
+        if getattr(self, "_style_now", None) == old:
+            self._style_now = new
+        self._build_style_grid()
+        if hasattr(self, "mini"):
+            self.mini.refresh_oc()
+        self.msg.config(text="⭐ 已把「%s」改名成「%s」。" % (old, new), fg=C_SUB)
+        return None
+
+    def delete_custom_style(self, name):
+        d = self.custom_styles()
+        if name not in d:
+            return
+        del d[name]
+        self._store_custom(d)
+        self.set_style_visible([k for k in self.style_visible() if k != name])
+        if getattr(self, "_style_now", None) == name:
+            self._style_now = None
+        if hasattr(self, "mini"):
+            self.mini.refresh_oc()
+        self.msg.config(text="已刪掉一鍵「%s」（那一格變回空白）。" % name, fg=C_SUB)
+
+    def clear_style_slot(self, name):
+        """內建的按鈕：從一鍵區拿下來（還是在「更多」裡），那格變空白。"""
+        self.set_style_visible([k for k in self.style_visible() if k != name])
+        self.msg.config(text="「%s」已拿下來（在「更多」裡），那一格變成空白，可以存自己的。" % name, fg=C_SUB)
+
+    def custom_style_dialog(self, rename=None):
+        title = "幫一鍵改名" if rename else "存成自己的一鍵"
+        tip = ("新的名字（最多 4 個中文字）：" if rename else
+               "幫目前調好的聲音取個名字（最多 4 個中文字）：\n會存：混響 A／B／C（全部旋鈕）＋人聲質感＋降噪")
+        while True:
+            name = simpledialog.askstring(title, tip, initialvalue=rename or "", parent=self.root)
+            if name is None:
+                return
+            err = self.rename_custom_style(rename, name) if rename else self.save_custom_style(name)
+            if not err:
+                return
+            messagebox.showinfo(title, err, parent=self.root)
 
     def style_swap_menu(self, name, e):
-        """右鍵一個按鈕：換成「更多」裡的另一個。"""
+        """右鍵一個按鈕：換成別的、清空這格；自己的一鍵還可以覆蓋、改名、刪掉。"""
         m = tk.Menu(self.root, tearoff=0)
         vis = self.style_visible()
-        hidden = [k for k in ONE_CLICK if k not in vis]
+        allst = self.all_styles()
+        if name in self.custom_styles():
+            m.add_command(label="⭐ 用目前的設定覆蓋「%s」" % name, command=lambda: self.overwrite_custom_style(name))
+            m.add_command(label="✏ 改名…", command=lambda: self.custom_style_dialog(rename=name))
+            m.add_command(label="🗑 刪掉「%s」" % name, command=lambda: self.delete_custom_style(name))
+            m.add_separator()
+        hidden = [k for k in allst if k not in vis]
         sub = tk.Menu(m, tearoff=0)
         for k in hidden:
-            sub.add_command(label=k + "　（" + ONE_CLICK[k]["desc"][:14] + "…）", command=lambda kk=k: self.swap_style(name, kk))
+            sub.add_command(label=k + "　（" + allst[k]["desc"][:14] + "…）", command=lambda kk=k: self.swap_style(name, kk))
         m.add_cascade(label="把「%s」換成…" % name, menu=sub, state="normal" if hidden else "disabled")
+        if name in ONE_CLICK:
+            m.add_command(label="清空這格（變成空白，可以存自己的）", command=lambda: self.clear_style_slot(name))
         m.add_command(label="⚙ 選擇要顯示的按鈕…", command=self.style_choose_dialog)
         m.tk_popup(e.x_root, e.y_root)
 
@@ -1218,13 +1372,15 @@ class App:
         """更多：沒放在按鈕上的風格也可以直接套用，或選擇要顯示哪些。"""
         m = tk.Menu(self.root, tearoff=0)
         vis = self.style_visible()
-        for k in [k for k in ONE_CLICK if k not in vis]:
-            m.add_command(label="⚡ " + k + "　" + ONE_CLICK[k]["desc"][:18] + "…", command=lambda kk=k: self.apply_style(kk))
-        if len(vis) < len(ONE_CLICK):
+        allst = self.all_styles()
+        for k in [k for k in allst if k not in vis]:
+            m.add_command(label="⚡ " + k + "　" + allst[k]["desc"][:18] + "…", command=lambda kk=k: self.apply_style(kk))
+        if len(vis) < len(allst):
             m.add_separator()
+        m.add_command(label="＋ 把目前的設定存成自己的一鍵…", command=self.custom_style_dialog)
         m.add_command(label="⚙ 選擇要顯示的按鈕（最多 %d 個）…" % ONE_CLICK_SLOTS, command=self.style_choose_dialog)
         m.add_command(label="↺ 恢復預設的按鈕", command=lambda: self.set_style_visible(ONE_CLICK_DEFAULT))
-        m.add_command(label="💡 小技巧：在按鈕上按右鍵＝直接換成別的", state="disabled")
+        m.add_command(label="💡 小技巧：在按鈕上按右鍵＝換成別的／清空；空白格「＋」＝存自己的", state="disabled")
         b = self.btn_style_more
         m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
 
@@ -1233,7 +1389,7 @@ class App:
         w.title("選擇一鍵按鈕")
         w.configure(bg=C_CARD)
         w.transient(self.root)
-        self.label(w, "勾選要放在一鍵區的按鈕（最多 %d 個，順序照勾的順序）。沒勾的會在「更多」裡。" % ONE_CLICK_SLOTS,
+        self.label(w, "勾選要放在一鍵區的按鈕（最多 %d 個，順序照勾的順序）。沒勾的會在「更多」裡；空下來的格子是「＋」。" % ONE_CLICK_SLOTS,
                    9, C_TXT, wraplength=360, justify="left").pack(anchor="w", padx=12, pady=(10, 6))
         order = list(self.style_visible())
         vars_ = {}
@@ -1249,10 +1405,12 @@ class App:
             elif k in order:
                 order.remove(k)
             cnt.config(text="已選 %d／%d" % (len(order), ONE_CLICK_SLOTS), fg=C_SUB)
-        for k, st in ONE_CLICK.items():
+        custom = self.custom_styles()
+        for k, st in self.all_styles().items():
             v = tk.IntVar(value=1 if k in order else 0)
             vars_[k] = v
-            tk.Checkbutton(w, text="%s　%s" % (k, st["desc"]), variable=v, command=lambda kk=k: toggle(kk), bg=C_CARD, fg=C_TXT,
+            tk.Checkbutton(w, text="%s%s　%s" % ("⭐ " if k in custom else "", k, st["desc"]), variable=v,
+                           command=lambda kk=k: toggle(kk), bg=C_CARD, fg=C_TXT,
                            selectcolor=C_DEEP, activebackground=C_CARD, activeforeground=C_TXT, anchor="w",
                            font=(FONT, 9)).pack(fill="x", padx=12)
         cnt.config(text="已選 %d／%d" % (len(order), ONE_CLICK_SLOTS))
@@ -1296,21 +1454,29 @@ class App:
 
     def apply_style(self, name):
         """一鍵套用某種歌的混響＋人聲質感（只動這兩樣；按「↶ 復原」可以回到按之前）。"""
-        st = ONE_CLICK[name]
+        st = self.all_styles().get(name)
+        if st is None:
+            return
         self._style_stack.append((self._style_now, self._style_snapshot()))   # 復原＝回到按這個之前
         del self._style_stack[:-20]
-        layers = list(st["rv"]) + [None] * (len(self.rv) - len(st["rv"]))
-        for r, lay in zip(self.rv, layers):
-            if lay is None:
-                r["mix"].set(0)
-                continue
-            t, mix, over = lay
-            r["type"].set(t)
-            for k, v in self.reverb_type_defaults(t).items():
-                r[k].set(round(v, 1))
-            for k, v in over.items():
-                r[k].set(v)
-            r["mix"].set(mix)
+        if "rv_full" in st:                    # 自己存的：混響每個旋鈕照存的時候
+            for r, d in zip(self.rv, st["rv_full"]):
+                for k in RV_FIELDS:
+                    if k in d:
+                        r[k].set(d[k])
+        else:
+            layers = list(st["rv"]) + [None] * (len(self.rv) - len(st["rv"]))
+            for r, lay in zip(self.rv, layers):
+                if lay is None:
+                    r["mix"].set(0)
+                    continue
+                t, mix, over = lay
+                r["type"].set(t)
+                for k, v in self.reverb_type_defaults(t).items():
+                    r[k].set(round(v, 1))
+                for k, v in over.items():
+                    r[k].set(v)
+                r["mix"].set(mix)
         pol = dict(st["polish"])
         if "deess" in st:
             pol["deess"] = st["deess"]

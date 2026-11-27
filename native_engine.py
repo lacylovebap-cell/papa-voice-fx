@@ -51,6 +51,8 @@ LIB.papa_play_buffer.argtypes = [ctypes.POINTER(ctypes.c_float), _I]
 LIB.papa_play_buffer.restype = _I
 LIB.papa_test_bgm_sim.argtypes = [_I, _I, _I, _D, _D, _I]
 LIB.papa_test_bgm_sim.restype = ctypes.c_long
+LIB.papa_test_ring_tone.argtypes = [_I, _I, _D, _D, _D, _I, ctypes.POINTER(ctypes.c_float), _I, ctypes.POINTER(ctypes.c_long)]
+LIB.papa_test_ring_tone.restype = _I
 LIB.papa_test_same_card.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 LIB.papa_test_same_card.restype = _I
 

@@ -295,15 +295,21 @@ fake.Stream = None
 
 # Ring 行為
 r = engine.Ring(4096)
-r.write(np.arange(1000, dtype=np.float32))
+for k in range(6):
+    r.write(np.arange(k * 100, k * 100 + 100, dtype=np.float32))
 a = r.read(100, 500)
-check("Ring 先進先出", abs(a[0]) <= 1 and abs(a[99] - 99) < 0.6, f"{a[0]} {a[99]}")
+a2 = r.read(100, 500)
+# 開始時存太多會先跳掉多的（只留 500），之後照順序、一個都不少
+check("Ring 先進先出（開始時只留需要的量；第一段淡入）", abs(a[99] / 0.99 - 199) < 0.6 and abs(a2[0] - 200) < 0.6
+      and abs(a2[99] - 299) < 0.6, f"{a[99]} {a2[0]} {a2[99]}")
 r.write(np.arange(9000, dtype=np.float32))
 check("Ring 超出容量時不會壞掉", r.n <= 4096)
 r2 = engine.Ring(1024)
 b = r2.read(64, 256)
 check("Ring 未存夠時輸出 0（預先緩衝）", np.all(b == 0))
-r2.write(np.ones(400, np.float32)); r2.read(64, 256); r2.read(400, 256)
+for k in range(6):
+    r2.write(np.ones(100, np.float32))
+r2.read(64, 256); r2.read(400, 256)
 check("Ring 播到不夠時記錄 underrun", r2.underruns == 1)
 # 時脈飄移：寫入比讀取快 0.3%，長時間下不應出現跳躍（爆音）
 r3 = engine.Ring(1 << 15)
@@ -318,6 +324,39 @@ for i in range(4000):
 o = np.concatenate(outs)[SR:]
 jump = np.max(np.abs(np.diff(o)))
 check("時脈飄移時沒有跳躍（不會啵）", jump < 2 * np.pi * f / SR * 1.5 and r3.underruns == 0, f"最大差 {jump:.4f}, underruns={r3.underruns}")
+
+
+# 對時緩衝不能讓音高抖：兩張卡的區塊時間錯開（寫 128、讀 480，回呼時間有抖動）
+def ring_tone(r, w, ppm, secs=10.0, jit=0.0004, target=256):
+    rng = np.random.default_rng(5)
+    R = engine.Ring(1 << 16)
+    pw, pr = w / SR, r / SR * (1 + ppm * 1e-6)
+    kw = kr = 0
+    tw, tr = pw, pr * 0.5 + 0.0003
+    nin = 0
+    outs = []
+    while min(tw, tr) < secs:
+        if tw <= tr:
+            R.write(np.sin(2 * np.pi * 1000 * (nin + np.arange(w)) / SR).astype(np.float32))
+            nin += w
+            kw += 1
+            tw = (kw + 1) * pw + rng.uniform(0, jit)
+        else:
+            outs.append(R.read(r, target))
+            kr += 1
+            tr = pr * 0.5 + 0.0003 + kr * pr + rng.uniform(0, jit)
+    y = np.concatenate(outs).astype(np.float64)[SR * 5:]
+    t = np.arange(len(y)) / SR
+    z = np.convolve(y * np.exp(-2j * np.pi * 1000 * t), np.ones(48) / 48, mode="valid")
+    fq = np.diff(np.unwrap(np.angle(z))) * SR / (2 * np.pi)
+    win = SR // 4
+    d = (fq - np.convolve(fq, np.ones(win) / win, mode="same"))[win:-win] / 1000 * 100
+    return float(np.percentile(np.abs(d), 99.5)), float(np.min(np.abs(z[win:-win])))
+
+
+for rr, ww in ((480, 128), (128, 480), (480, 480)):
+    fl, amp = ring_tone(rr, ww, 60)
+    check("對時緩衝音高不抖（讀 %d／寫 %d）" % (rr, ww), fl < 0.1 and amp > 0.45, "抖動 %.3f%%、最小音量 %.2f" % (fl, amp))
 
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)
