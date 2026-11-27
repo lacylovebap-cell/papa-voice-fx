@@ -749,11 +749,12 @@ static const ColorBand COLORS[6][5] = {
 };
 
 // ---------------------------------------------------------------- 去電流聲（低低的「嗡——」）
-// 台灣的電是 60 Hz：嗡聲在 60、120、180、240 Hz。切掉 75 Hz 以下＋在這幾個頻率挖很窄的洞，人聲幾乎不受影響。
+// 台灣的電是 60 Hz：嗡聲主要在 60、120 Hz。切掉 75 Hz 以下＋在這幾個頻率挖很窄的洞，人聲幾乎不受影響。
 struct DeHum {
-    Biquad hp1, hp2, pk[4];
+    Biquad hp1, hp2, pk[2];
     explicit DeHum(double sr = 48000) : hp1(BQ_HP, 75, sr, 0, 0.707), hp2(BQ_HP, 75, sr, 0, 0.707) {
-        for (int i = 0; i < 4; i++) pk[i] = Biquad(BQ_PEAKING, 60.0 * (i + 1), sr, -24.0, 40.0);   // 很窄的洞，不會吃到歌聲
+        // 只挖 60、120 Hz（180、240 Hz 會碰到女生的低音，例如 B3≈247 Hz，不挖）
+        for (int i = 0; i < 2; i++) pk[i] = Biquad(BQ_PEAKING, 60.0 * (i + 1), sr, -24.0, 40.0);
     }
     void process(double* y, int n, bool on) {
         if (!on) return;

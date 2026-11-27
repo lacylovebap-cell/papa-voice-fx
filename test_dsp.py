@@ -594,8 +594,8 @@ check("混響的部分有記下來（給耳機混響用）", float(np.sqrt(np.me
 
 # ---------- 去電流聲：60 Hz 嗡聲（含 120／180／240／300）壓掉，人聲幾乎不變
 tt = np.arange(SR * 2) / SR
-hum = sum(0.02 / (k + 1) * np.sin(2 * np.pi * 60 * (k + 1) * tt) for k in range(4))
-vox = 0.2 * (np.sin(2 * np.pi * 330 * tt) + np.sin(2 * np.pi * 262 * tt) + np.sin(2 * np.pi * 440 * tt)) / 3   # C4、E4、A4
+hum = sum(0.02 / (k + 1) * np.sin(2 * np.pi * 60 * (k + 1) * tt) for k in range(2))
+vox = 0.2 * (np.sin(2 * np.pi * 240 * tt) + np.sin(2 * np.pi * 185 * tt) + np.sin(2 * np.pi * 330 * tt)) / 3   # 低音 B3／F#3、E4 也不能被吃掉
 def run_hum(sig, on):
     f = VoiceFx(SR); f.set(comp=0.0, verb=0.0, deess=0.0, dehum=on)
     return np.concatenate([f.process(sig[i:i + 256].astype(np.float32)) for i in range(0, len(sig) - 255, 256)])

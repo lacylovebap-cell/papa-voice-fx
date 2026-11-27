@@ -911,7 +911,7 @@ class VoiceFx:
         self.leveler = Leveler(sr)
         self.gate = NoiseGate(sr)
         self.dehum = [Biquad("hp", 75, sr, 0, 0.707), Biquad("hp", 75, sr, 0, 0.707)] + \
-            [Biquad("peaking", 60.0 * (i + 1), sr, -24.0, 40.0) for i in range(4)]   # 去電流聲（60 Hz 嗡聲，很窄不吃歌聲）
+            [Biquad("peaking", 60.0 * (i + 1), sr, -24.0, 40.0) for i in range(2)]   # 去電流聲（只挖 60、120 Hz，不碰歌聲的低音）
         self.info = (0.0, None, None)
         self.set()
 
