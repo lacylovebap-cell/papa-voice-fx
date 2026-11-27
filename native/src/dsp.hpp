@@ -130,6 +130,7 @@ struct TunerParams {
     double strength = 1.0, speed = 0.0, shift = 0.0;
     double robot = 57, card_shift = 0.0;
     double flex = 0.0, humanize = 0.0, sticky = 0.7;
+    double tol = 0.0;       // 自然修音：容許誤差（半音）。已經夠準的就不修，聽起來不會被「拉平」
     double predict = 2.0;   // 以「參考區塊（256）」為單位
     double vibrato = 0.0;   // 自然顫音（dB）
 };
@@ -351,7 +352,13 @@ struct Tuner {
             if (has_prev_target && target == prev_target) hold_t += dt; else hold_t = 0;
             prev_target = target; has_prev_target = true;
             double cs = p.card_shift;
-            if (p.mode == M_NATURAL) want = cs + (target - (dsm + cs)) * p.strength + p.shift;
+            if (p.mode == M_NATURAL) {
+                double err = target - (dsm + cs);
+                double ae = std::fabs(err);
+                // 容許誤差：差不到 tol 的不修；超過的只修「超過的部分」（柔和過渡，不會突然跳）
+                double e2 = ae <= p.tol ? 0.0 : (err > 0 ? 1 : -1) * (ae - p.tol);
+                want = cs + e2 * p.strength + p.shift;
+            }
             else want = cs + (target - (det + cs)) * p.strength + p.shift;
             double wgt = 1.0;
             if (p.flex > 0) {

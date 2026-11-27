@@ -48,10 +48,10 @@ AT_REFS = {
     "電鰻（0／0／0）": (0, 0, 0, 0),
 }
 # 自然修音（Auto-Tune「自然流行」：修正速度 60、Flex 20、Humanize 100）
-NATURAL = (60, 20, 100)
+NATURAL = (120, 20, 100)     # 修正速度 120 ms（慢一點比較自然）、Flex、Humanize
 
 # 效果的所有參數（都能在混音台用旋鈕細調）
-FX_BASE = dict(mode="off", phone=0, machine=0, robot_fx=0, electro_fx=0, strength=100, retune=0, flex=0, humanize=0,
+FX_BASE = dict(mode="off", phone=0, machine=0, robot_fx=0, electro_fx=0, strength=100, retune=0, flex=0, humanize=0, tol=0,
                vibrato=0.0, metal=0, robot_note=57, phone_dist=25, shift=0.0, comp=40, eq_lo=0, eq_mid=0, eq_hi=0)
 NEUTRAL = dict(FX_BASE)
 
@@ -63,7 +63,8 @@ def _style_vals(st):
 
 PRESETS = {
     "talk": {**FX_BASE, "comp": 45, "eq_mid": 2, "eq_hi": 2},
-    "sing": {**FX_BASE, "mode": "natural", "retune": NATURAL[0], "flex": NATURAL[1], "humanize": NATURAL[2],
+    # 非常自然的修音：只修 70%、差 20 音分以內不修、修正慢一點 → 不會有電音感
+    "sing": {**FX_BASE, "mode": "natural", "retune": NATURAL[0], "flex": NATURAL[1], "humanize": NATURAL[2], "strength": 70, "tol": 20,
              "eq_lo": 1, "eq_mid": 1, "eq_hi": 2},
     "electro": {**FX_BASE, "mode": "electro", "comp": 50, "eq_mid": 1, "eq_hi": 2, **_style_vals("電音")},
     "phone": {**FX_BASE, "phone": 1, "comp": 60},
@@ -79,6 +80,7 @@ PARAM_SPEC = {
     "humanize": ("Humanize", 0, 100, "{:.0f}", 1),
     "vibrato": ("自然顫音", -12, 12, "{:+.1f} dB", 0.5),
     "strength": ("修正強度", 0, 100, "{:.0f}%", 1),
+    "tol": ("容許誤差（夠準就不修）", 0, 50, "{:.0f} 音分", 1),
     "electro_fx": ("雙重唱亮度", 0, 100, "{:.0f}%", 1),
     "metal": ("金屬共鳴", 0, 100, "{:.0f}%", 1),
     "robot_fx": ("機械感", 0, 100, "{:.0f}%", 1),
@@ -93,7 +95,7 @@ PARAM_SPEC = {
 _COMMON = ["shift", "comp", "eq_lo", "eq_mid", "eq_hi"]
 EDIT_KEYS = {
     "talk": _COMMON,
-    "sing": ["retune", "flex", "humanize", "vibrato", "strength"] + _COMMON,
+    "sing": ["retune", "flex", "humanize", "vibrato", "strength", "tol"] + _COMMON,
     "electro": ["retune", "flex", "humanize", "vibrato", "electro_fx", "metal"] + _COMMON,
     "phone": ["phone_dist"] + _COMMON,
     "machine": _COMMON,
@@ -783,7 +785,7 @@ class App:
         color = "人聲修飾" if self.active_preset in ("sing", "electro") else "原本"
         kw = dict(color=color, mode=self.fxv["mode"].get(), key=0, scale="major",
                   strength=g("strength") / 100, speed=g("retune") / 400, flex=g("flex") / 100,
-                  humanize=g("humanize") / 100, vibrato=g("vibrato"), shift=g("shift"), robot=g("robot_note"),
+                  humanize=g("humanize") / 100, vibrato=g("vibrato"), tol=g("tol") / 100, shift=g("shift"), robot=g("robot_note"),
                   metal=g("metal") / 100, robot_fx=g("robot_fx") / 100,
                   phone=bool(g("phone")), phone_dist=g("phone_dist") / 100, machine=bool(g("machine")),
                   eq_lo=g("eq_lo"), eq_mid=g("eq_mid"), eq_hi=g("eq_hi"), comp=g("comp") / 100,

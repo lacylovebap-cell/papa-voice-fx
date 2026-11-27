@@ -155,7 +155,7 @@ class Tuner:
         self.held = None
         self.kcount = 0
         self.p = dict(mode="off", key=0, scale="major", strength=1.0, speed=0.0, shift=0.0, robot=57, card_shift=0.0,
-                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0, vibrato=0.0)
+                      flex=0.0, humanize=0.0, sticky=0.7, predict=2.0, vibrato=0.0, tol=0.0)
         self.hold_t = 0.0
         self.prev_target = None
         self.update(**{})
@@ -297,7 +297,11 @@ class Tuner:
             cs = p["card_shift"]
             if p["mode"] == "natural":
                 # 自然修音：只把「音的中心」拉到準的音上，顫音和滑音原樣保留（不會有機械感）
-                want = cs + (self.target - (self.dsm + cs)) * p["strength"] + p["shift"]
+                # 容許誤差：差不到 tol 的不修；超過的只修「超過的部分」（聽起來不會被拉平）
+                err = self.target - (self.dsm + cs)
+                ae = abs(err)
+                e2 = 0.0 if ae <= p["tol"] else math.copysign(ae - p["tol"], err)
+                want = cs + e2 * p["strength"] + p["shift"]
             else:
                 want = cs + (self.target - (self.det + cs)) * p["strength"] + p["shift"]
             # Flex-Tune：只修離目標音「夠近」的音，離很遠的（刻意的表情、滑音）放過
@@ -918,7 +922,7 @@ class VoiceFx:
             lk = {f: kw["rv%d_%s" % (i + 1, f)] for f in REVERB_FIELDS if "rv%d_%s" % (i + 1, f) in kw}
             if lk:
                 L.set(**lk)
-        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict", "vibrato"}
+        tuner_keys = {"mode", "key", "scale", "strength", "speed", "shift", "robot", "flex", "humanize", "sticky", "predict", "vibrato", "tol"}
         tk = {k: v for k, v in kw.items() if k in tuner_keys}
         if "card" in kw:
             tk["card_shift"] = self.CARD_SHIFT if kw["card"] else 0.0

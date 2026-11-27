@@ -568,5 +568,20 @@ check("響度：只有雜音時不會越拉越大（6 秒後多不到 1 dB）", 
 sing = 10 ** (-30 / 20) * np.sin(2 * np.pi * 300 * np.arange(SR * 3) / SR) * np.sqrt(2) + noise[:SR * 3]
 g_sing = 20 * np.log10(rms(run_loud(sing, 0.6)[-SR:]) / rms(run_loud(sing, 0.0)[-SR:]))
 check("響度：小聲唱歌時照樣會拉上來", g_sing > 3.0, "%.1f dB" % g_sing)
+# ---------- 自然修音：容許誤差＝已經夠準的不去拉（不會有電音感）
+def natural_out(cents, **kw):
+    f0 = 220 * 2 ** (cents / 1200)
+    tt = np.arange(SR * 2) / SR
+    x = (0.3 * np.sin(2 * np.pi * f0 * tt) + 0.1 * np.sin(4 * np.pi * f0 * tt)).astype(np.float32)
+    f = VoiceFx(SR); f.set(mode="natural", card=False, speed=0.3, flex=0.2, humanize=1.0, verb=0.0, comp=0.0, **kw)
+    y = np.concatenate([f.process(x[i:i + 256]) for i in range(0, len(x) - 255, 256)])
+    seg = y[SR:]; sp = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))); fr = np.fft.rfftfreq(len(seg), 1 / SR)
+    m = (fr > 150) & (fr < 300)
+    return 1200 * np.log2(fr[m][np.argmax(sp[m])] / 220)
+c10 = natural_out(10, strength=0.7, tol=0.2)
+check("自然修音：只偏 10 音分（夠準）就不修，保留原本的味道", abs(c10 - 10) < 4, "%+.0f 音分" % c10)
+c60 = natural_out(60, strength=0.7, tol=0.2)
+check("自然修音：偏很多時拉近一部分，不會一口氣拉到死準", 60 < c60 < 95, "%+.0f 音分" % c60)
+
 print("\n全部通過" if not fails else f"\n{fails} 項失敗")
 sys.exit(1 if fails else 0)
