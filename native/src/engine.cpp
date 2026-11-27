@@ -46,7 +46,7 @@ struct Ring {
     std::vector<float> buf;
     size_t cap, r = 0, w = 0, n = 0;
     double frac = 0;
-    bool primed = false;
+    bool primed = false, fade_in = false;
     long underruns = 0;
     std::mutex m;
     explicit Ring(size_t c = 1 << 16) : buf(c, 0.f), cap(c) {}
@@ -63,7 +63,7 @@ struct Ring {
         std::lock_guard<std::mutex> g(m);
         if (!primed) {
             if (n < target + mcount) { std::fill(out, out + mcount, 0.f); return; }
-            primed = true;
+            primed = true; fade_in = true;   // 重新開始：慢慢淡入，不會「啵」一下
         }
         if (n < mcount + 4) {
             size_t k = std::min(n > 0 ? n - 1 : 0, mcount);
@@ -85,6 +85,7 @@ struct Ring {
             out[i] = (float)(a * (1 - fr) + b * fr);
             pos += ratio;
         }
+        if (fade_in) { for (size_t i = 0; i < mcount; i++) out[i] *= (float)i / (float)mcount; fade_in = false; }
         size_t used = std::min((size_t)pos, n);
         frac = pos - (double)(size_t)pos;
         r = (r + used) % cap;
@@ -135,6 +136,7 @@ struct Engine {
     // 伴奏對時緩衝：跟著「耳機那條每次要多少」和「伴奏每次送來多少」自動加大。
     // 耳機用主機板 Realtek 時每次常是 480 個樣本（10 ms），只留 3 個小區塊的緩衝會一直斷（聽起來卡卡的）。
     size_t bgm_target = 384;
+    double bgm_gate = 0;   // 伴奏雜訊門：伴奏幾乎沒聲音時（裝置的底噪、嗡嗡聲）直接靜音
     std::atomic<int> bgm_in_max{0};
     std::atomic<long> bgm_underruns{0};
     std::vector<double> bgm_fifo;  // 伴奏延後用
@@ -294,8 +296,17 @@ struct Engine {
                 bgm_underruns++;
                 if (bgm_target < (size_t)SR / 10) bgm_target += (size_t)std::max(block, frames);   // 還是不夠：再多存一點
             }
+            // 伴奏雜訊門：比 -54 dB 還小＝沒在放歌，只剩裝置的底噪／嗡嗡聲 → 慢慢靜音；一放歌立刻打開
+            double ss = 0;
+            for (int i = 0; i < frames; i++) ss += (double)tmp_bg[i] * tmp_bg[i];
+            double lvl = std::sqrt(ss / std::max(1, frames));
+            double g0 = bgm_gate;
+            bgm_gate = lvl > 0.002 ? 1.0 : bgm_gate * std::exp(-(double)frames / (SR * 0.15));
             float gb = bgm_on ? (float)g_bgm : 0.f;
-            for (int i = 0; i < frames; i++) { tmp_bg[i] *= gb; pk_bgm = std::max(pk_bgm, std::fabs(tmp_bg[i])); }
+            for (int i = 0; i < frames; i++) {
+                float gg = (float)(g0 + (bgm_gate - g0) * (i + 1) / frames);
+                tmp_bg[i] *= gb * gg; pk_bgm = std::max(pk_bgm, std::fabs(tmp_bg[i]));
+            }
         } else std::fill(tmp_bg.begin(), tmp_bg.begin() + frames, 0.f);
         lv_bgm.store(pk_bgm);
 

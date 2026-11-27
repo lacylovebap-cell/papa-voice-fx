@@ -69,6 +69,7 @@ class Ring:
                 if self.n < target + m:          # 先存夠緩衝再開始播（只多約 2 個區塊延遲）
                     return np.zeros(m, np.float32)
                 self.primed = True
+                self._fade_in = True                 # 重新開始：慢慢淡入，不會「啵」一下
             if self.n < m + 4:
                 # 真的不夠：把剩下的淡出到 0，而不是突然變 0
                 out = np.zeros(m, np.float32)
@@ -100,6 +101,9 @@ class Ring:
             used = min(used, self.n)
             self.r = (self.r + used) % self.cap
             self.n -= used
+            if getattr(self, "_fade_in", False):
+                out = out * np.linspace(0, 1, m, endpoint=False).astype(np.float32)
+                self._fade_in = False
             return out
 
 
@@ -336,6 +340,11 @@ class Engine:
                     self.bgm_underruns += 1
                     if self.bgm_target < SR // 10:
                         self.bgm_target += max(self.block, len(y))
+                # 伴奏雜訊門：比 -54 dB 還小＝沒在放歌，只剩裝置的底噪／嗡嗡聲 → 慢慢靜音；一放歌立刻打開
+                lvl = float(np.sqrt(np.mean(bg ** 2))) if len(bg) else 0.0
+                g0 = getattr(self, "_bgm_gate", 0.0)
+                self._bgm_gate = 1.0 if lvl > 0.002 else g0 * float(np.exp(-len(bg) / (SR * 0.15)))
+                bg *= np.linspace(g0, self._bgm_gate, len(bg) + 1)[1:]
                 bg *= self.gains["bgm"] if self.bgm_on else 0.0
                 # 伴奏延後：你是聽著耳機裡的伴奏唱的，人聲回到電腦時已經晚了「一圈延遲」，
                 # 所以把伴奏同樣延後，直播裡兩者才會剛好對齊

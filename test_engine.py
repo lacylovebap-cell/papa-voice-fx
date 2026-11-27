@@ -170,6 +170,13 @@ m2, c2 = run_bgm(2.0)
 check("耳機伴奏 200%：耳機裡的伴奏變大", m2 > 1.6 * m1, "%.3f → %.3f" % (m1, m2))
 check("耳機伴奏 200%：直播的伴奏不變", abs(c2 - c1) < 0.01 * max(c1, 1e-6) + 1e-4, "%.3f → %.3f" % (c1, c2))
 eng.set_gain("monbgm", 1.0)
+# 伴奏雜訊門：伴奏來源只有底噪／嗡嗡聲（-66 dB）時，直播和耳機都靜音
+hum_only = (0.0005 * np.sin(2 * np.pi * 60 * np.arange(len(sig)) / SR)).astype(np.float32)
+bgm_save = bgm
+bgm = hum_only
+mh, ch = run_bgm(1.0)
+bgm = bgm_save
+check("伴奏只有嗡嗡聲（沒在放歌）時：直播聽不到", ch < 1e-5, "%.6f" % ch)
 # 耳機混響：只有耳機裡的混響變小，直播不變
 eng.bgm_ring = None
 eng.set_params(rv1_type=5, rv1_mix=0.6)
