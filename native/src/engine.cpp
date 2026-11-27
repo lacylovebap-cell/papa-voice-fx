@@ -49,6 +49,8 @@ struct Ring {
     static constexpr double KP = 1e-5;     // 緩衝多 1 個樣本 → 速度差多少
     static constexpr double MAXR = 0.005;  // 速度最多差 0.5%（只有時脈差很多時才會用到）
     static constexpr double SLEW = 0.002;  // 速度每秒最多改變多少
+    static constexpr double LO_TC = 6.0;   // 低點／高點記多久（秒）：最低的那一下會記住一陣子
+    static const size_t EXTRA_STEP = 128;  // 斷一次就多存多少
     std::vector<float> buf;
     size_t cap, r = 0, w = 0, n = 0;
     double frac = 0;
@@ -102,7 +104,7 @@ struct Ring {
             std::fill(out + k, out + mcount, 0.f);
             underruns++;
             primed = false;
-            extra = std::min<size_t>(extra + 64, 960);
+            extra = std::min<size_t>(extra + EXTRA_STEP, 1536);
             return;
         }
         double S = std::max((double)target, floor_target(mcount));
@@ -111,7 +113,7 @@ struct Ring {
             lo = hi = avg = (double)n;
         }
         double x = (double)n;
-        double a2 = 1.0 - std::exp(-dt / 2.0), a5 = 1.0 - std::exp(-dt / 0.5);
+        double a2 = 1.0 - std::exp(-dt / LO_TC), a5 = 1.0 - std::exp(-dt / 0.5);
         lo = x < lo ? x : lo + (x - lo) * a2;     // 低點：往下立刻跟，往上慢慢跟
         hi = x > hi ? x : hi + (x - hi) * a2;
         avg += (x - avg) * a5;

@@ -42,6 +42,8 @@ class Ring:
     KP = 1e-5        # 緩衝多 1 個樣本 → 速度差多少
     MAXR = 0.005     # 速度最多差 0.5%
     SLEW = 0.002     # 速度每秒最多改變多少（很慢 → 聽不出音高在動）
+    LO_TC = 6.0      # 低點／高點記多久（秒）：最低的那一下會記住一陣子，不會剛好又低一點就斷
+    EXTRA_STEP = 128 # 斷一次就多存多少
 
     def __init__(self, cap):
         self.cap = cap
@@ -111,14 +113,14 @@ class Ring:
                     self.n -= k
                 self.underruns += 1
                 self.primed = False
-                self.extra = min(self.extra + 64, 960)
+                self.extra = min(self.extra + self.EXTRA_STEP, 1536)
                 return out
             S = max(target, self.floor_target(m))
             if self.n > 4 * S + 2 * self.wmax + m:   # 累積太多（裝置卡住後一次湧進來）：跳過
                 self._drop_to(S)
                 self.lo = self.hi = self.avg = float(self.n)
             x = float(self.n)
-            a2 = 1 - np.exp(-dt / 2.0)
+            a2 = 1 - np.exp(-dt / self.LO_TC)
             a5 = 1 - np.exp(-dt / 0.5)
             self.lo = x if x < self.lo else self.lo + (x - self.lo) * a2
             self.hi = x if x > self.hi else self.hi + (x - self.hi) * a2
