@@ -683,7 +683,7 @@ class App:
             var._fmt = (vl, "{:.0f}%")
             if k == "gate":
                 self.gate_scale = pol.grid_slaves(row=r, column=c + 1)[0]
-                self.btn_gate_lock = tk.Checkbutton(pol, text="🔒", variable=self.gate_lock, command=self.on_gate_lock,
+                self.btn_gate_lock = tk.Checkbutton(pol, text="鎖", variable=self.gate_lock, command=self.on_gate_lock,
                                                     bg=C_CARD, fg=C_TXT, selectcolor=C_DEEP, activebackground=C_CARD,
                                                     activeforeground=C_TXT, font=(FONT, 8), bd=0, padx=0, pady=0)
                 self.btn_gate_lock.grid(row=r, column=c + 3, sticky="w")
